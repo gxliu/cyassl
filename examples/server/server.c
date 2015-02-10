@@ -1,6 +1,6 @@
 /* server.c
  *
- * Copyright (C) 2006-2013 wolfSSL Inc.
+ * Copyright (C) 2006-2014 wolfSSL Inc.
  *
  * This file is part of CyaSSL.
  *
@@ -16,7 +16,7 @@
  *
  * You should have received a copy of the GNU General Public License
  * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA
  */
 
 #ifdef HAVE_CONFIG_H
@@ -24,6 +24,9 @@
 #endif
 
 #include <cyassl/ctaocrypt/settings.h>
+#ifdef HAVE_ECC
+    #include <cyassl/ctaocrypt/ecc.h>   /* ecc_fp_free */
+#endif
 
 #if !defined(CYASSL_TRACK_MEMORY) && !defined(NO_MAIN_DRIVER)
     /* in case memory tracker wants stats */
@@ -31,12 +34,19 @@
 #endif
 
 #if defined(CYASSL_MDK_ARM)
-    #include <stdio.h>
-    #include <string.h>
-    #include <rtl.h>
-    #include "cyassl_MDK_ARM.h"
-#endif
+        #include <stdio.h>
+        #include <string.h>
 
+        #if defined(CYASSL_MDK5)
+            #include "cmsis_os.h"
+            #include "rl_fs.h" 
+            #include "rl_net.h" 
+        #else
+            #include "rtl.h"
+        #endif
+
+        #include "cyassl_MDK_ARM.h"
+#endif
 #include <cyassl/openssl/ssl.h>
 #include <cyassl/test.h>
 
@@ -121,6 +131,7 @@ static void Usage(void)
     printf("-u          Use UDP DTLS,"
            " add -v 2 for DTLSv1 (default), -v 3 for DTLSv1.2\n");
     printf("-f          Fewer packets/group messages\n");
+    printf("-r          Create server ready file, for external monitor\n");
     printf("-N          Use Non-blocking sockets\n");
     printf("-S <str>    Use Host Name Indication\n");
 #ifdef HAVE_OCSP
@@ -130,12 +141,10 @@ static void Usage(void)
 #ifdef HAVE_PK_CALLBACKS 
     printf("-P          Public Key Callbacks\n");
 #endif
-}
-
-#ifdef CYASSL_MDK_SHELL
-#define exit(code) return(code)
+#ifdef HAVE_ANON
+    printf("-a          Anonymous server\n");
 #endif
-
+}
 
 THREAD_RETURN CYASSL_THREAD server_test(void* args)
 {
@@ -153,18 +162,20 @@ THREAD_RETURN CYASSL_THREAD server_test(void* args)
     int    version = SERVER_DEFAULT_VERSION;
     int    doCliCertCheck = 1;
     int    useAnyAddr = 0;
-    int    port = yasslPort;
+    word16 port = yasslPort;
     int    usePsk = 0;
+    int    useAnon = 0;
     int    doDTLS = 0;
     int    useNtruKey   = 0;
     int    nonBlocking  = 0;
     int    trackMemory  = 0;
     int    fewerPackets = 0;
     int    pkCallbacks  = 0;
+    int    serverReadyFile = 0;
     char*  cipherList = NULL;
-    char*  verifyCert = (char*)cliCert;
-    char*  ourCert    = (char*)svrCert;
-    char*  ourKey     = (char*)svrKey;
+    const char* verifyCert = cliCert;
+    const char* ourCert    = svrCert;
+    const char* ourKey     = svrKey;
     int    argc = ((func_args*)args)->argc;
     char** argv = ((func_args*)args)->argv;
 
@@ -187,7 +198,11 @@ THREAD_RETURN CYASSL_THREAD server_test(void* args)
     (void)trackMemory;
     (void)pkCallbacks;
 
-    while ((ch = mygetopt(argc, argv, "?dbstnNufPp:v:l:A:c:k:S:oO:")) != -1) {
+#ifdef CYASSL_TIRTOS
+    fdOpenSession(Task_self());
+#endif
+
+    while ((ch = mygetopt(argc, argv, "?dbstnNufraPp:v:l:A:c:k:S:oO:")) != -1) {
         switch (ch) {
             case '?' :
                 Usage();
@@ -223,6 +238,10 @@ THREAD_RETURN CYASSL_THREAD server_test(void* args)
                 fewerPackets = 1;
                 break;
 
+            case 'r' :
+                serverReadyFile = 1;
+                break;
+
             case 'P' :
             #ifdef HAVE_PK_CALLBACKS 
                 pkCallbacks = 1;
@@ -230,7 +249,7 @@ THREAD_RETURN CYASSL_THREAD server_test(void* args)
                 break;
 
             case 'p' :
-                port = atoi(myoptarg);
+                port = (word16)atoi(myoptarg);
                 #if !defined(NO_MAIN_DRIVER) || defined(USE_WINDOWS_API)
                     if (port == 0)
                         err_sys("port number cannot be 0");
@@ -281,6 +300,12 @@ THREAD_RETURN CYASSL_THREAD server_test(void* args)
                 #ifdef HAVE_OCSP
                     useOcsp = 1;
                     ocspUrl = myoptarg;
+                #endif
+                break;
+
+            case 'a' :
+                #ifdef HAVE_ANON
+                    useAnon = 1;
                 #endif
                 break;
 
@@ -374,12 +399,12 @@ THREAD_RETURN CYASSL_THREAD server_test(void* args)
     if (fewerPackets)
         CyaSSL_CTX_set_group_messages(ctx);
 
-#ifdef OPENSSL_EXTRA
+#if defined(OPENSSL_EXTRA) || defined(HAVE_WEBSERVER)
     SSL_CTX_set_default_passwd_cb(ctx, PasswordCallBack);
 #endif
 
 #if !defined(NO_FILESYSTEM) && !defined(NO_CERTS)
-    if (!usePsk) {
+    if (!usePsk && !useAnon) {
         if (SSL_CTX_use_certificate_file(ctx, ourCert, SSL_FILETYPE_PEM)
                                          != SSL_SUCCESS)
             err_sys("can't load server cert file, check file and run from"
@@ -397,7 +422,7 @@ THREAD_RETURN CYASSL_THREAD server_test(void* args)
 #endif
 
 #if !defined(NO_FILESYSTEM) && !defined(NO_CERTS)
-    if (!useNtruKey && !usePsk) {
+    if (!useNtruKey && !usePsk && !useAnon) {
         if (SSL_CTX_use_PrivateKey_file(ctx, ourKey, SSL_FILETYPE_PEM)
                                          != SSL_SUCCESS)
             err_sys("can't load server private key file, check file and run "
@@ -422,9 +447,19 @@ THREAD_RETURN CYASSL_THREAD server_test(void* args)
 #endif
     }
 
+    if (useAnon) {
+#ifdef HAVE_ANON
+        CyaSSL_CTX_allow_anon_cipher(ctx);
+        if (cipherList == NULL) {
+            if (SSL_CTX_set_cipher_list(ctx, "ADH-AES128-SHA") != SSL_SUCCESS)
+                err_sys("server can't set cipher list 4");
+        }
+#endif
+    }
+
 #if !defined(NO_FILESYSTEM) && !defined(NO_CERTS)
     /* if not using PSK, verify peer with certs */
-    if (doCliCertCheck && usePsk == 0) {
+    if (doCliCertCheck && usePsk == 0 && useAnon == 0) {
         SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER |
                                 SSL_VERIFY_FAIL_IF_NO_PEER_CERT,0);
         if (SSL_CTX_load_verify_locations(ctx, verifyCert, 0) != SSL_SUCCESS)
@@ -473,15 +508,16 @@ THREAD_RETURN CYASSL_THREAD server_test(void* args)
         SetupPkCallbacks(ctx, ssl);
 #endif
 
-    tcp_accept(&sockfd, &clientfd, (func_args*)args, port, useAnyAddr, doDTLS);
+    tcp_accept(&sockfd, &clientfd, (func_args*)args, port, useAnyAddr, doDTLS,
+               serverReadyFile);
     if (!doDTLS) 
         CloseSocket(sockfd);
 
     SSL_set_fd(ssl, clientfd);
-    if (usePsk == 0) {
-        #if !defined(NO_FILESYSTEM) && defined(OPENSSL_EXTRA)
+    if (usePsk == 0 || useAnon == 1 || cipherList != NULL) {
+        #if !defined(NO_FILESYSTEM) && !defined(NO_DH)
             CyaSSL_SetTmpDH_file(ssl, dhParam, SSL_FILETYPE_PEM);
-        #elif !defined(NO_CERTS)
+        #elif !defined(NO_DH)
             SetDH(ssl);  /* repick suites with DHE, higher priority than PSK */
         #endif
     }
@@ -519,6 +555,8 @@ THREAD_RETURN CYASSL_THREAD server_test(void* args)
         
     #if defined(CYASSL_MDK_SHELL) && defined(HAVE_MDK_RTX)
         os_dly_wait(500) ;
+    #elif defined (CYASSL_TIRTOS)
+        Task_yield();
     #endif
 
     SSL_shutdown(ssl);
@@ -528,12 +566,24 @@ THREAD_RETURN CYASSL_THREAD server_test(void* args)
     CloseSocket(clientfd);
     ((func_args*)args)->return_code = 0;
 
+
+#if defined(NO_MAIN_DRIVER) && defined(HAVE_ECC) && defined(FP_ECC) \
+                            && defined(HAVE_THREAD_LS)
+    ecc_fp_free();  /* free per thread cache */
+#endif
+
 #ifdef USE_CYASSL_MEMORY
     if (trackMemory)
         ShowMemoryTracker();
-#endif /* USE_CYASSL_MEMORY */
+#endif
 
+#ifdef CYASSL_TIRTOS
+    fdCloseSession(Task_self());
+#endif
+
+#ifndef CYASSL_TIRTOS
     return 0;
+#endif
 }
 
 

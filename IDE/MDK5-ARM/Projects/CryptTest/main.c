@@ -1,6 +1,6 @@
 /* main.c
  *
- * Copyright (C) 2006-2013 wolfSSL Inc.
+ * Copyright (C) 2006-2014 wolfSSL Inc.
  *
  * This file is part of CyaSSL.
  *
@@ -16,7 +16,7 @@
  *
  * You should have received a copy of the GNU General Public License
  * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA
  */
  
 #ifdef HAVE_CONFIG_H
@@ -27,13 +27,15 @@
 #include <cyassl/ctaocrypt/logging.h>
 
 #include "cmsis_os.h"
-#include "rl_fs.h" 
- 
+
 #include <stdio.h>
 
 /*-----------------------------------------------------------------------------
  *        Initialize a Flash Memory Card
  *----------------------------------------------------------------------------*/
+#if !defined(NO_FILESYSTEM)
+#include "rl_fs.h" 
+
 static void init_filesystem (void) {
   int32_t retv;
 
@@ -51,8 +53,9 @@ static void init_filesystem (void) {
     printf ("Drive M0 initialization failed!\n");
   }
 }
+#endif
+
 extern void ctaocrypt_test(void * arg) ;
-extern void init_time(void) ;
 
 /*-----------------------------------------------------------------------------
  *       mian entry 
@@ -62,8 +65,10 @@ int main()
 {
     void * arg = NULL ;
 
-    init_time() ;
+	#if !defined(NO_FILESYSTEM)
     init_filesystem ();
+	#endif
+	
     printf("=== Start: Crypt test ===\n") ;
         ctaocrypt_test(arg) ;
     printf("=== End: Crypt test  ===\n") ;    

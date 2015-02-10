@@ -1,6 +1,6 @@
 /* ssl.h
  *
- * Copyright (C) 2006-2013 wolfSSL Inc.
+ * Copyright (C) 2006-2014 wolfSSL Inc.
  *
  * This file is part of CyaSSL.
  *
@@ -16,7 +16,7 @@
  *
  * You should have received a copy of the GNU General Public License
  * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA
  */
 
 
@@ -159,6 +159,7 @@ enum AlertDescription {
     close_notify            = 0,
     unexpected_message      = 10,
     bad_record_mac          = 20,
+    record_overflow         = 22,
     decompression_failure   = 30,
     handshake_failure       = 40,
     no_certificate          = 41,
@@ -217,18 +218,26 @@ CYASSL_API int CyaSSL_use_RSAPrivateKey_file(CYASSL*, const char*, int);
                                                     const char*, int);
 #endif
 
+#ifdef HAVE_POLY1305
+    CYASSL_API int CyaSSL_use_old_poly(CYASSL*, int);
+#endif
+
 #ifdef HAVE_NTRU
     CYASSL_API int CyaSSL_CTX_use_NTRUPrivateKey_file(CYASSL_CTX*, const char*);
     /* load NTRU private key blob */
 #endif
 
-CYASSL_API int CyaSSL_PemCertToDer(const char*, unsigned char*, int);
+#ifndef CYASSL_PEMCERT_TODER_DEFINED
+    CYASSL_API int CyaSSL_PemCertToDer(const char*, unsigned char*, int);
+    #define CYASSL_PEMCERT_TODER_DEFINED
+#endif
 
 #endif /* !NO_FILESYSTEM && !NO_CERTS */
 
 CYASSL_API CYASSL_CTX* CyaSSL_CTX_new(CYASSL_METHOD*);
 CYASSL_API CYASSL* CyaSSL_new(CYASSL_CTX*);
 CYASSL_API int  CyaSSL_set_fd (CYASSL*, int);
+CYASSL_API int  CyaSSL_get_ciphers(char*, int);
 CYASSL_API int  CyaSSL_get_fd(const CYASSL*);
 CYASSL_API void CyaSSL_set_using_nonblock(CYASSL*, int);
 CYASSL_API int  CyaSSL_get_using_nonblock(CYASSL*);
@@ -280,6 +289,12 @@ CYASSL_API void CyaSSL_load_error_strings(void);
 CYASSL_API int  CyaSSL_library_init(void);
 CYASSL_API long CyaSSL_CTX_set_session_cache_mode(CYASSL_CTX*, long);
 
+#ifdef HAVE_SECRET_CALLBACK
+typedef int (*SessionSecretCb)(CYASSL* ssl,
+                                        void* secret, int* secretSz, void* ctx);
+CYASSL_API int  CyaSSL_set_session_secret_cb(CYASSL*, SessionSecretCb, void*);
+#endif /* HAVE_SECRET_CALLBACK */
+
 /* session cache persistence */
 CYASSL_API int  CyaSSL_save_session_cache(const char*);
 CYASSL_API int  CyaSSL_restore_session_cache(const char*);
@@ -312,6 +327,7 @@ CYASSL_API int   CyaSSL_ERR_GET_REASON(int err);
 CYASSL_API char* CyaSSL_ERR_error_string(unsigned long,char*);
 CYASSL_API void  CyaSSL_ERR_error_string_n(unsigned long e, char* buf,
                                            unsigned long sz);
+CYASSL_API const char* CyaSSL_ERR_reason_error_string(unsigned long);
 
 /* extras */
 
@@ -702,6 +718,11 @@ enum { /* ssl Constants */
 #endif /* NO_PSK */
 
 
+#ifdef HAVE_ANON
+    CYASSL_API int CyaSSL_CTX_allow_anon_cipher(CYASSL_CTX*);
+#endif /* HAVE_ANON */
+
+
 /* extra begins */
 
 enum {  /* ERR Constants */
@@ -886,7 +907,7 @@ CYASSL_API int CyaSSL_make_eap_keys(CYASSL*, void* key, unsigned int len,
         #ifdef __PPU
             #include <sys/types.h>
             #include <sys/socket.h>
-        #elif !defined(CYASSL_MDK_ARM)
+        #elif !defined(CYASSL_MDK_ARM) && !defined(CYASSL_IAR_ARM)
             #include <sys/uio.h>
         #endif
         /* allow writev style writing */
@@ -925,6 +946,21 @@ CYASSL_API int CyaSSL_set_group_messages(CYASSL*);
 typedef int (*CallbackIORecv)(CYASSL *ssl, char *buf, int sz, void *ctx);
 typedef int (*CallbackIOSend)(CYASSL *ssl, char *buf, int sz, void *ctx);
 
+#ifdef HAVE_FUZZER
+enum fuzzer_type {
+    FUZZ_HMAC      = 0,
+    FUZZ_ENCRYPT   = 1,
+    FUZZ_SIGNATURE = 2,
+    FUZZ_HASH      = 3,
+    FUZZ_HEAD      = 4
+};
+
+typedef int (*CallbackFuzzer)(CYASSL* ssl, const unsigned char* buf, int sz,
+        int type, void* fuzzCtx);
+
+CYASSL_API void CyaSSL_SetFuzzerCb(CYASSL* ssl, CallbackFuzzer cbf, void* fCtx);
+#endif
+
 CYASSL_API void CyaSSL_SetIORecv(CYASSL_CTX*, CallbackIORecv);
 CYASSL_API void CyaSSL_SetIOSend(CYASSL_CTX*, CallbackIOSend);
 
@@ -936,6 +972,27 @@ CYASSL_API void* CyaSSL_GetIOWriteCtx(CYASSL* ssl);
 
 CYASSL_API void CyaSSL_SetIOReadFlags( CYASSL* ssl, int flags);
 CYASSL_API void CyaSSL_SetIOWriteFlags(CYASSL* ssl, int flags);
+
+
+#ifndef CYASSL_USER_IO
+    /* default IO callbacks */
+    CYASSL_API int EmbedReceive(CYASSL* ssl, char* buf, int sz, void* ctx);
+    CYASSL_API int EmbedSend(CYASSL* ssl, char* buf, int sz, void* ctx);
+
+    #ifdef HAVE_OCSP
+        CYASSL_API int EmbedOcspLookup(void*, const char*, int, unsigned char*,
+                                       int, unsigned char**);
+        CYASSL_API void EmbedOcspRespFree(void*, unsigned char*);
+    #endif
+
+    #ifdef CYASSL_DTLS
+        CYASSL_API int EmbedReceiveFrom(CYASSL* ssl, char* buf, int sz, void*);
+        CYASSL_API int EmbedSendTo(CYASSL* ssl, char* buf, int sz, void* ctx);
+        CYASSL_API int EmbedGenerateCookie(CYASSL* ssl, unsigned char* buf,
+                                           int sz, void*);
+    #endif /* CYASSL_DTLS */
+#endif /* CYASSL_USER_IO */
+
 
 #ifdef HAVE_NETX
     CYASSL_API void CyaSSL_SetIO_NetX(CYASSL* ssl, NX_TCP_SOCKET* nxsocket,
@@ -971,6 +1028,7 @@ enum {
     CYASSL_CHAIN_CA = 2           /* added to cache from trusted chain */
 };
 
+CYASSL_API int CyaSSL_SetMinVersion(CYASSL* ssl, int version);
 CYASSL_API int CyaSSL_GetObjectSize(void);  /* object size based on build */
 CYASSL_API int CyaSSL_SetVersion(CYASSL* ssl, int version);
 CYASSL_API int CyaSSL_KeyPemToDer(const unsigned char*, int sz, unsigned char*,
@@ -1042,9 +1100,18 @@ enum BulkCipherAlgorithm {
     cyassl_aes,
     cyassl_aes_gcm,
     cyassl_aes_ccm,
+    cyassl_chacha,
     cyassl_camellia,
     cyassl_hc128,                  /* CyaSSL extensions */
     cyassl_rabbit
+};
+
+
+/* for KDF TLS 1.2 mac types */
+enum KDF_MacAlgorithm {
+    cyassl_sha256 = 4,     /* needs to match internal MACAlgorithm */
+    cyassl_sha384,
+    cyassl_sha512
 };
 
 
@@ -1173,6 +1240,7 @@ CYASSL_API int CyaSSL_CTX_UseCavium(CYASSL_CTX*, int devId);
 
 /* Server Name Indication */
 #ifdef HAVE_SNI
+
 /* SNI types */
 enum {
     CYASSL_SNI_HOST_NAME = 0
@@ -1184,6 +1252,7 @@ CYASSL_API int CyaSSL_CTX_UseSNI(CYASSL_CTX* ctx, unsigned char type,
                                          const void* data, unsigned short size);
 
 #ifndef NO_CYASSL_SERVER
+
 /* SNI options */
 enum {
     CYASSL_SNI_CONTINUE_ON_MISMATCH = 0x01, /* do not abort on mismatch flag */
@@ -1206,16 +1275,16 @@ CYASSL_API unsigned char CyaSSL_SNI_Status(CYASSL* ssl, unsigned char type);
 
 CYASSL_API unsigned short CyaSSL_SNI_GetRequest(CYASSL *ssl, unsigned char type,
                                                                    void** data);
-
 CYASSL_API int CyaSSL_SNI_GetFromBuffer(
                  const unsigned char* clientHello, unsigned int helloSz,
                  unsigned char type, unsigned char* sni, unsigned int* inOutSz);
 
-#endif /* NO_CYASSL_SERVER */
-#endif /* HAVE_SNI */
+#endif
+#endif
 
 /* Maximum Fragment Length */
 #ifdef HAVE_MAX_FRAGMENT
+
 /* Fragment lengths */
 enum {
     CYASSL_MFL_2_9  = 1, /*  512 bytes */
@@ -1230,8 +1299,8 @@ enum {
 CYASSL_API int CyaSSL_UseMaxFragment(CYASSL* ssl, unsigned char mfl);
 CYASSL_API int CyaSSL_CTX_UseMaxFragment(CYASSL_CTX* ctx, unsigned char mfl);
 
-#endif /* NO_CYASSL_CLIENT */
-#endif /* HAVE_MAX_FRAGMENT */
+#endif
+#endif
 
 /* Truncated HMAC */
 #ifdef HAVE_TRUNCATED_HMAC
@@ -1240,8 +1309,8 @@ CYASSL_API int CyaSSL_CTX_UseMaxFragment(CYASSL_CTX* ctx, unsigned char mfl);
 CYASSL_API int CyaSSL_UseTruncatedHMAC(CYASSL* ssl);
 CYASSL_API int CyaSSL_CTX_UseTruncatedHMAC(CYASSL_CTX* ctx);
 
-#endif /* NO_CYASSL_CLIENT */
-#endif /* HAVE_TRUNCATED_HMAC */
+#endif
+#endif
 
 /* Elliptic Curves */
 #ifdef HAVE_SUPPORTED_CURVES
@@ -1259,14 +1328,50 @@ enum {
 
 CYASSL_API int CyaSSL_UseSupportedCurve(CYASSL* ssl, unsigned short name);
 CYASSL_API int CyaSSL_CTX_UseSupportedCurve(CYASSL_CTX* ctx,
-                                                          unsigned short name);
+                                                           unsigned short name);
 
-#endif /* NO_CYASSL_CLIENT */
-#endif /* HAVE_SUPPORTED_CURVES */
+#endif
+#endif
 
+/* Secure Renegotiation */
+#ifdef HAVE_SECURE_RENEGOTIATION
+
+CYASSL_API int CyaSSL_UseSecureRenegotiation(CYASSL* ssl);
+CYASSL_API int CyaSSL_Rehandshake(CYASSL* ssl);
+
+#endif
+
+/* Session Ticket */
+#ifdef HAVE_SESSION_TICKET
+#ifndef NO_CYASSL_CLIENT
+
+CYASSL_API int CyaSSL_UseSessionTicket(CYASSL* ssl);
+CYASSL_API int CyaSSL_CTX_UseSessionTicket(CYASSL_CTX* ctx);
+CYASSL_API int CyaSSL_get_SessionTicket(CYASSL*, unsigned char*, unsigned int*);
+CYASSL_API int CyaSSL_set_SessionTicket(CYASSL*, unsigned char*, unsigned int);
+typedef int (*CallbackSessionTicket)(CYASSL*, const unsigned char*, int, void*);
+CYASSL_API int CyaSSL_set_SessionTicket_cb(CYASSL*,
+                                                  CallbackSessionTicket, void*);
+
+#endif
+#endif
 
 #define CYASSL_CRL_MONITOR   0x01   /* monitor this dir flag */
 #define CYASSL_CRL_START_MON 0x02   /* start monitoring flag */
+
+
+/* External facing KDF */
+CYASSL_API
+int CyaSSL_MakeTlsMasterSecret(unsigned char* ms, unsigned int msLen,
+                               const unsigned char* pms, unsigned int pmsLen,
+                               const unsigned char* cr, const unsigned char* sr,
+                               int tls1_2, int hash_type);
+
+CYASSL_API
+int CyaSSL_DeriveTlsKeys(unsigned char* key_data, unsigned int keyLen,
+                               const unsigned char* ms, unsigned int msLen,
+                               const unsigned char* sr, const unsigned char* cr,
+                               int tls1_2, int hash_type);
 
 #ifdef CYASSL_CALLBACKS
 

@@ -1,6 +1,6 @@
 /* ssl.h
  *
- * Copyright (C) 2006-2013 wolfSSL Inc.
+ * Copyright (C) 2006-2014 wolfSSL Inc.
  *
  * This file is part of CyaSSL.
  *
@@ -16,7 +16,7 @@
  *
  * You should have received a copy of the GNU General Public License
  * a with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA
  */
 
 
@@ -142,6 +142,7 @@ typedef CYASSL_X509_STORE_CTX X509_STORE_CTX;
 
 #define ERR_error_string CyaSSL_ERR_error_string
 #define ERR_error_string_n CyaSSL_ERR_error_string_n
+#define ERR_reason_error_string CyaSSL_ERR_reason_error_string
 
 #define SSL_set_ex_data CyaSSL_set_ex_data
 #define SSL_get_shutdown CyaSSL_get_shutdown

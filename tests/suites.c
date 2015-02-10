@@ -1,6 +1,6 @@
 /* suites.c
  *
- * Copyright (C) 2006-2013 wolfSSL Inc.
+ * Copyright (C) 2006-2014 wolfSSL Inc.
  *
  * This file is part of CyaSSL.
  *
@@ -16,7 +16,7 @@
  *
  * You should have received a copy of the GNU General Public License
  * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA
  */
 
 #ifdef HAVE_CONFIG_H
@@ -36,18 +36,20 @@
 #define MAX_COMMAND_SZ 240
 #define MAX_SUITE_SZ 80 
 #define NOT_BUILT_IN -123
-#define VERSION_TOO_OLD -124
+#ifdef NO_OLD_TLS
+    #define VERSION_TOO_OLD -124
+#endif
 
 #include "examples/client/client.h"
 #include "examples/server/server.h"
 
 
-CYASSL_CTX* cipherSuiteCtx = NULL;
-char nonblockFlag[] = "-N";
-char noVerifyFlag[] = "-d";
-char portFlag[] = "-p";
-char flagSep[] = " ";
-char svrPort[] = "0";
+static CYASSL_CTX* cipherSuiteCtx = NULL;
+static char nonblockFlag[] = "-N";
+static char noVerifyFlag[] = "-d";
+static char portFlag[] = "-p";
+static char flagSep[] = " ";
+static char svrPort[] = "0";
 
 
 #ifdef NO_OLD_TLS
@@ -119,8 +121,17 @@ static int execute_test_case(int svr_argc, char** svr_argv,
                               int cli_argc, char** cli_argv,
                               int addNoVerify, int addNonBlocking)
 {
+#ifdef CYASSL_TIRTOS
+    func_args cliArgs = {0};
+    func_args svrArgs = {0};
+    cliArgs.argc = cli_argc;
+    cliArgs.argv = cli_argv;
+    svrArgs.argc = svr_argc;
+    svrArgs.argv = svr_argv;
+#else
     func_args cliArgs = {cli_argc, cli_argv, 0, NULL, NULL};
     func_args svrArgs = {svr_argc, svr_argv, 0, NULL, NULL};
+#endif
 
     tcp_ready   ready;
     THREAD_TYPE serverThread;
@@ -181,7 +192,7 @@ static int execute_test_case(int svr_argc, char** svr_argv,
             strcat(commandLine, flagSep);
         }
     }
-    #ifndef USE_WINDOWS_API
+    #if !defined(USE_WINDOWS_API) && !defined(CYASSL_TIRTOS)
         /* add port 0 */
         if (svr_argc + 2 > MAX_ARGS)
             printf("cannot add the magic port number flag to server\n");
@@ -220,11 +231,15 @@ static int execute_test_case(int svr_argc, char** svr_argv,
 
     InitTcpReady(&ready);
 
+#ifdef CYASSL_TIRTOS
+    fdOpenSession(Task_self());
+#endif
+
     /* start server */
     svrArgs.signal = &ready;
     start_thread(server_test, &svrArgs, &serverThread);
     wait_tcp_ready(&svrArgs);
-    #ifndef USE_WINDOWS_API
+    #if !defined(USE_WINDOWS_API) && !defined(CYASSL_TIRTOS)
         if (ready.port != 0)
         {
             if (cli_argc + 2 > MAX_ARGS)
@@ -253,6 +268,9 @@ static int execute_test_case(int svr_argc, char** svr_argv,
         exit(EXIT_FAILURE);
     }
 
+#ifdef CYASSL_TIRTOS
+    fdCloseSession(Task_self());
+#endif
     FreeTcpReady(&ready);
     
     return 0;
@@ -442,6 +460,7 @@ int SuiteTest(void)
     printf(" End Cipher Suite Tests\n");
 
     CyaSSL_CTX_free(cipherSuiteCtx);
+    CyaSSL_Cleanup();
 
     return args.return_code;
 }

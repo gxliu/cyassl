@@ -1,6 +1,6 @@
 /* echoclient.c
  *
- * Copyright (C) 2006-2013 wolfSSL Inc.
+ * Copyright (C) 2006-2014 wolfSSL Inc.
  *
  * This file is part of CyaSSL.
  *
@@ -16,7 +16,7 @@
  *
  * You should have received a copy of the GNU General Public License
  * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA
  */
 
 #ifdef HAVE_CONFIG_H
@@ -28,10 +28,18 @@
 #include <cyassl/openssl/ssl.h>
 
 #if defined(CYASSL_MDK_ARM)
-    #include <stdio.h>
-    #include <string.h>
-    #include <rtl.h>
-    #include "cyassl_MDK_ARM.h"
+        #include <stdio.h>
+        #include <string.h>
+
+        #if defined(CYASSL_MDK5)
+            #include "cmsis_os.h"
+            #include "rl_fs.h" 
+            #include "rl_net.h" 
+        #else
+            #include "rtl.h"
+        #endif
+
+        #include "cyassl_MDK_ARM.h"
 #endif
 
 #include <cyassl/test.h>
@@ -60,7 +68,7 @@ void echoclient_test(void* args)
     int sendSz;
     int argc    = 0;
     char** argv = 0;
-    int port = yasslPort;
+    word16 port = yasslPort;
 
     ((func_args*)args)->return_code = -1; /* error state */
     
@@ -139,7 +147,7 @@ void echoclient_test(void* args)
 #endif
     }
 
-#ifdef OPENSSL_EXTRA
+#if defined(OPENSSL_EXTRA) || defined(HAVE_WEBSERVER)
     SSL_CTX_set_default_passwd_cb(ctx, PasswordCallBack);
 #endif
 
@@ -148,7 +156,6 @@ void echoclient_test(void* args)
     #endif
 
     ssl = SSL_new(ctx);
-        
 
     if (doDTLS) {
         SOCKADDR_IN_T addr;
@@ -254,11 +261,12 @@ void echoclient_test(void* args)
 #if defined(DEBUG_CYASSL) && !defined(CYASSL_MDK_SHELL)
         CyaSSL_Debugging_ON();
 #endif
-
+#ifndef CYASSL_TIRTOS
         if (CurrentDir("echoclient"))
             ChangeDirBack(2);
         else if (CurrentDir("Debug") || CurrentDir("Release"))
             ChangeDirBack(3);
+#endif
         echoclient_test(&args);
 
         CyaSSL_Cleanup();

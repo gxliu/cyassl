@@ -1,6 +1,6 @@
 /* integer.h
  *
- * Copyright (C) 2006-2013 wolfSSL Inc.
+ * Copyright (C) 2006-2014 wolfSSL Inc.
  *
  * This file is part of CyaSSL.
  *
@@ -16,7 +16,7 @@
  *
  * You should have received a copy of the GNU General Public License
  * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA
  */
 
 /*
@@ -69,6 +69,10 @@ extern "C" {
    #if !(defined(MP_64BIT) && defined(MP_16BIT) && defined(MP_8BIT))
       #define MP_64BIT
    #endif
+#endif
+/* if intel compiler doesn't provide 128 bit type don't turn on 64bit */
+#if defined(MP_64BIT) && defined(__INTEL_COMPILER) && !defined(HAVE___UINT128_T)
+    #undef MP_64BIT
 #endif
 
 /* some default configurations.
@@ -305,6 +309,9 @@ int mp_init_multi(mp_int* a, mp_int* b, mp_int* c, mp_int* d, mp_int* e,
     int mp_gcd (mp_int * a, mp_int * b, mp_int * c);
     int mp_lcm (mp_int * a, mp_int * b, mp_int * c);
 #endif
+
+int mp_cnt_lsb(mp_int *a);
+int mp_mod_d(mp_int* a, mp_digit b, mp_digit* c);
 
 #ifdef __cplusplus
    }

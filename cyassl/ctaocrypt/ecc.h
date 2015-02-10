@@ -1,6 +1,6 @@
 /* ecc.h
  *
- * Copyright (C) 2006-2013 wolfSSL Inc.
+ * Copyright (C) 2006-2014 wolfSSL Inc.
  *
  * This file is part of CyaSSL.
  *
@@ -16,7 +16,7 @@
  *
  * You should have received a copy of the GNU General Public License
  * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA
  */
 
 #ifdef HAVE_ECC
@@ -49,6 +49,7 @@ typedef struct {
     int size;       /* The size of the curve in octets */
     const char* name;     /* name of this curve */
     const char* prime;    /* prime that defines the field, curve is in (hex) */
+    const char* Af;       /* fields A param (hex) */
     const char* Bf;       /* fields B param (hex) */
     const char* order;    /* order of the curve (hex) */
     const char* Gx;       /* x coordinate of the base point on curve (hex) */
@@ -105,10 +106,19 @@ void ecc_fp_free(void);
 CYASSL_API
 int ecc_export_x963(ecc_key*, byte* out, word32* outLen);
 CYASSL_API
+int ecc_export_x963_ex(ecc_key*, byte* out, word32* outLen, int compressed);
+    /* extended functionality with compressed option */
+CYASSL_API
 int ecc_import_x963(const byte* in, word32 inLen, ecc_key* key);
 CYASSL_API
 int ecc_import_private_key(const byte* priv, word32 privSz, const byte* pub,
                            word32 pubSz, ecc_key* key);
+CYASSL_API
+int ecc_rs_to_sig(const char* r, const char* s, byte* out, word32* outlen);
+CYASSL_API
+int ecc_import_raw(ecc_key* key, const char* qx, const char* qy,
+                   const char* d, const char* curveName);
+
 CYASSL_API
 int ecc_export_private_only(ecc_key* key, byte* out, word32* outLen);
 
@@ -157,11 +167,15 @@ CYASSL_API
 ecEncCtx* ecc_ctx_new(int flags, RNG* rng);
 CYASSL_API
 void ecc_ctx_free(ecEncCtx*);
+CYASSL_API
+int ecc_ctx_reset(ecEncCtx*, RNG*);   /* reset for use again w/o alloc/free */
 
 CYASSL_API
 const byte* ecc_ctx_get_own_salt(ecEncCtx*);
 CYASSL_API
 int ecc_ctx_set_peer_salt(ecEncCtx*, const byte* salt);
+CYASSL_API
+int ecc_ctx_set_info(ecEncCtx*, const byte* info, int sz);
 
 CYASSL_API
 int ecc_encrypt(ecc_key* privKey, ecc_key* pubKey, const byte* msg,

@@ -1,6 +1,6 @@
 /* hc128.c
  *
- * Copyright (C) 2006-2013 wolfSSL Inc.
+ * Copyright (C) 2006-2014 wolfSSL Inc.
  *
  * This file is part of CyaSSL.
  *
@@ -16,7 +16,7 @@
  *
  * You should have received a copy of the GNU General Public License
  * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA
  */
 
 #ifdef HAVE_CONFIG_H
@@ -28,7 +28,7 @@
 #ifdef HAVE_HC128
 
 #include <cyassl/ctaocrypt/hc128.h>
-#include <cyassl/ctaocrypt/error.h>
+#include <cyassl/ctaocrypt/error-crypt.h>
 #include <cyassl/ctaocrypt/logging.h>
 #ifdef NO_INLINE
     #include <cyassl/ctaocrypt/hc128.h>
@@ -290,7 +290,7 @@ static INLINE int DoKey(HC128* ctx, const byte* key, const byte* iv)
 int Hc128_SetKey(HC128* ctx, const byte* key, const byte* iv)
 {
 #ifdef XSTREAM_ALIGN
-    if ((word)key % 4) {
+    if ((cyassl_word)key % 4) {
         int alignKey[4];
 
         /* iv gets aligned in SetIV */
@@ -338,6 +338,7 @@ static INLINE int DoProcess(HC128* ctx, byte* output, const byte* input,
 
   if (msglen > 0)
   {
+      XMEMSET(keystream, 0, sizeof(keystream)); /* hush the static analysis */
       generate_keystream(ctx, keystream);
 
 #ifdef BIG_ENDIAN_ORDER
@@ -361,7 +362,7 @@ static INLINE int DoProcess(HC128* ctx, byte* output, const byte* input,
 int Hc128_Process(HC128* ctx, byte* output, const byte* input, word32 msglen)
 {
 #ifdef XSTREAM_ALIGN
-    if ((word)input % 4 || (word)output % 4) {
+    if ((cyassl_word)input % 4 || (cyassl_word)output % 4) {
         #ifndef NO_CYASSL_ALLOC_ALIGN
             byte* tmp;
             CYASSL_MSG("Hc128Process unaligned");

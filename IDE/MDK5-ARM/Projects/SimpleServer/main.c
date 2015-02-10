@@ -1,6 +1,6 @@
 /* main.c
  *
- * Copyright (C) 2006-2013 wolfSSL Inc.
+ * Copyright (C) 2006-2014 wolfSSL Inc.
  *
  * This file is part of CyaSSL.
  *
@@ -16,7 +16,7 @@
  *
  * You should have received a copy of the GNU General Public License
  * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA
  */
  
 #ifdef HAVE_CONFIG_H
@@ -32,6 +32,8 @@
 #include <stdio.h>
 #include "cyassl_MDK_ARM.h"
 #include <cyassl/ssl.h>
+
+#include "config-SimpleServer.h"
 
 /*-----------------------------------------------------------------------------
  *        Initialize a Flash Memory Card
@@ -82,10 +84,9 @@ char* myoptarg = NULL;
 
 int main() 
 {
-    static char *argv[]    = {  "client",   ""} ;
-    static func_args args  = {  2, argv } ; 
+    static char *argv[]    = {  "server",   "-p", CYASSL_LISTEN_PORT, "-d"} ;
+    static func_args args  = {  4, argv } ; 
         
-    init_time() ;
     init_filesystem ();
     net_initialize() ;
     osThreadCreate (osThread (tcp_poll), NULL); 

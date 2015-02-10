@@ -1,6 +1,6 @@
 /* tls.c
  *
- * Copyright (C) 2006-2013 wolfSSL Inc.
+ * Copyright (C) 2006-2014 wolfSSL Inc.
  *
  * This file is part of CyaSSL.
  *
@@ -16,7 +16,7 @@
  *
  * You should have received a copy of the GNU General Public License
  * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA
  */
 
 #ifdef HAVE_CONFIG_H
@@ -27,7 +27,7 @@
 
 #include <cyassl/ssl.h>
 #include <cyassl/internal.h>
-#include <cyassl/error.h>
+#include <cyassl/error-ssl.h>
 #include <cyassl/ctaocrypt/hmac.h>
 
 
@@ -46,90 +46,131 @@
 
 
 #ifdef CYASSL_SHA384
-    #define PHASH_MAX_DIGEST_SIZE SHA384_DIGEST_SIZE
+    #define P_HASH_MAX_SIZE SHA384_DIGEST_SIZE
 #else
-    #define PHASH_MAX_DIGEST_SIZE SHA256_DIGEST_SIZE
+    #define P_HASH_MAX_SIZE SHA256_DIGEST_SIZE
 #endif
 
 /* compute p_hash for MD5, SHA-1, SHA-256, or SHA-384 for TLSv1 PRF */
-static void p_hash(byte* result, word32 resLen, const byte* secret,
+static int p_hash(byte* result, word32 resLen, const byte* secret,
                    word32 secLen, const byte* seed, word32 seedLen, int hash)
 {
-    word32   len = PHASH_MAX_DIGEST_SIZE;
-    word32   times;
-    word32   lastLen;
-    word32   lastTime;
-    word32   i;
-    word32   idx = 0;
-    byte     previous[PHASH_MAX_DIGEST_SIZE];  /* max size */
-    byte     current[PHASH_MAX_DIGEST_SIZE];   /* max size */
+    word32 len = P_HASH_MAX_SIZE;
+    word32 times;
+    word32 lastLen;
+    word32 lastTime;
+    word32 i;
+    word32 idx = 0;
+    int    ret = 0;
+#ifdef CYASSL_SMALL_STACK
+    byte*  previous;
+    byte*  current;
+    Hmac*  hmac;    
+#else
+    byte   previous[P_HASH_MAX_SIZE];  /* max size */
+    byte   current[P_HASH_MAX_SIZE];   /* max size */
+    Hmac   hmac[1];
+#endif
 
-    Hmac hmac;
+#ifdef CYASSL_SMALL_STACK
+    previous = (byte*)XMALLOC(P_HASH_MAX_SIZE, NULL, DYNAMIC_TYPE_TMP_BUFFER);
+    current  = (byte*)XMALLOC(P_HASH_MAX_SIZE, NULL, DYNAMIC_TYPE_TMP_BUFFER);
+    hmac     = (Hmac*)XMALLOC(sizeof(Hmac),    NULL, DYNAMIC_TYPE_TMP_BUFFER);
+
+    if (previous == NULL || current == NULL || hmac == NULL) {
+        if (previous) XFREE(previous, NULL, DYNAMIC_TYPE_TMP_BUFFER);
+        if (current)  XFREE(current,  NULL, DYNAMIC_TYPE_TMP_BUFFER);
+        if (hmac)     XFREE(hmac,     NULL, DYNAMIC_TYPE_TMP_BUFFER);
+
+        return MEMORY_E;
+    }
+#endif
 
     switch (hash) {
         #ifndef NO_MD5
-        case md5_mac:
-        {
-            len = MD5_DIGEST_SIZE;
-            hash = MD5;
-        }
-        break;
+            case md5_mac:
+                hash = MD5;
+                len  = MD5_DIGEST_SIZE;
+            break;
         #endif
+
         #ifndef NO_SHA256
-        case sha256_mac:
-        {
-            len = SHA256_DIGEST_SIZE;
-            hash = SHA256;
-        }
-        break;
+            case sha256_mac:
+                hash = SHA256;
+                len  = SHA256_DIGEST_SIZE;
+            break;
         #endif
+
         #ifdef CYASSL_SHA384
-        case sha384_mac:
-        {
-            len = SHA384_DIGEST_SIZE;
-            hash = SHA384;
-        }
-        break;
+            case sha384_mac:
+                hash = SHA384;
+                len  = SHA384_DIGEST_SIZE;
+            break;
         #endif
-#ifndef NO_SHA
-        case sha_mac:
-        default:
-        {
-            len = SHA_DIGEST_SIZE;
-            hash = SHA;
-        }
-        break;
-#endif
+
+        #ifndef NO_SHA
+            case sha_mac:
+            default:
+                hash = SHA;
+                len  = SHA_DIGEST_SIZE;
+            break;
+        #endif
     }
 
-    times = resLen / len;
+    times   = resLen / len;
     lastLen = resLen % len;
-    if (lastLen) times += 1;
+
+    if (lastLen)
+        times += 1;
+
     lastTime = times - 1;
 
-    HmacSetKey(&hmac, hash, secret, secLen);
-    HmacUpdate(&hmac, seed, seedLen);       /* A0 = seed */
-    HmacFinal(&hmac, previous);             /* A1 */
+    if ((ret = HmacSetKey(hmac, hash, secret, secLen)) == 0) {
+        if ((ret = HmacUpdate(hmac, seed, seedLen)) == 0) { /* A0 = seed */
+            if ((ret = HmacFinal(hmac, previous)) == 0) {   /* A1 */
+                for (i = 0; i < times; i++) {
+                    ret = HmacUpdate(hmac, previous, len);
+                    if (ret != 0)
+                        break;
+                    ret = HmacUpdate(hmac, seed, seedLen);
+                    if (ret != 0)
+                        break;
+                    ret = HmacFinal(hmac, current);
+                    if (ret != 0)
+                        break;
 
-    for (i = 0; i < times; i++) {
-        HmacUpdate(&hmac, previous, len);
-        HmacUpdate(&hmac, seed, seedLen);
-        HmacFinal(&hmac, current);
-
-        if ( (i == lastTime) && lastLen)
-            XMEMCPY(&result[idx], current, min(lastLen, sizeof(current)));
-        else {
-            XMEMCPY(&result[idx], current, len);
-            idx += len;
-            HmacUpdate(&hmac, previous, len);
-            HmacFinal(&hmac, previous);
+                    if ((i == lastTime) && lastLen)
+                        XMEMCPY(&result[idx], current, 
+                                                 min(lastLen, P_HASH_MAX_SIZE));
+                    else {
+                        XMEMCPY(&result[idx], current, len);
+                        idx += len;
+                        ret = HmacUpdate(hmac, previous, len);
+                        if (ret != 0)
+                            break;
+                        ret = HmacFinal(hmac, previous);
+                        if (ret != 0)
+                            break;
+                    }
+                }
+            }
         }
     }
-    XMEMSET(previous, 0, sizeof previous);
-    XMEMSET(current, 0, sizeof current);
-    XMEMSET(&hmac, 0, sizeof hmac);
+
+    XMEMSET(previous, 0, P_HASH_MAX_SIZE);
+    XMEMSET(current,  0, P_HASH_MAX_SIZE);
+    XMEMSET(hmac,     0, sizeof(Hmac));
+
+#ifdef CYASSL_SMALL_STACK
+    XFREE(previous, NULL, DYNAMIC_TYPE_TMP_BUFFER);
+    XFREE(current,  NULL, DYNAMIC_TYPE_TMP_BUFFER);
+    XFREE(hmac,     NULL, DYNAMIC_TYPE_TMP_BUFFER);
+#endif
+
+    return ret;
 }
 
+#undef P_HASH_MAX_SIZE
 
 
 #ifndef NO_OLD_TLS
@@ -145,38 +186,79 @@ static INLINE void get_xor(byte *digest, word32 digLen, byte* md5, byte* sha)
 
 
 /* compute TLSv1 PRF (pseudo random function using HMAC) */
-static void doPRF(byte* digest, word32 digLen, const byte* secret,word32 secLen,
-            const byte* label, word32 labLen, const byte* seed, word32 seedLen)
+static int doPRF(byte* digest, word32 digLen, const byte* secret,word32 secLen,
+                 const byte* label, word32 labLen, const byte* seed,
+                 word32 seedLen)
 {
+    int    ret  = 0;
     word32 half = (secLen + 1) / 2;
 
-    byte md5_half[MAX_PRF_HALF];        /* half is real size */
-    byte sha_half[MAX_PRF_HALF];        /* half is real size */
-    byte labelSeed[MAX_PRF_LABSEED];    /* labLen + seedLen is real size */
-    byte md5_result[MAX_PRF_DIG];       /* digLen is real size */
-    byte sha_result[MAX_PRF_DIG];       /* digLen is real size */
+#ifdef CYASSL_SMALL_STACK
+    byte* md5_half;
+    byte* sha_half;
+    byte* labelSeed;
+    byte* md5_result;
+    byte* sha_result;
+#else
+    byte  md5_half[MAX_PRF_HALF];     /* half is real size */
+    byte  sha_half[MAX_PRF_HALF];     /* half is real size */
+    byte  labelSeed[MAX_PRF_LABSEED]; /* labLen + seedLen is real size */
+    byte  md5_result[MAX_PRF_DIG];    /* digLen is real size */
+    byte  sha_result[MAX_PRF_DIG];    /* digLen is real size */
+#endif
 
     if (half > MAX_PRF_HALF)
-        return;
+        return BUFFER_E;
     if (labLen + seedLen > MAX_PRF_LABSEED)
-        return;
+        return BUFFER_E;
     if (digLen > MAX_PRF_DIG)
-        return;
+        return BUFFER_E;
+
+#ifdef CYASSL_SMALL_STACK
+    md5_half   = (byte*)XMALLOC(MAX_PRF_HALF,    NULL, DYNAMIC_TYPE_TMP_BUFFER);
+    sha_half   = (byte*)XMALLOC(MAX_PRF_HALF,    NULL, DYNAMIC_TYPE_TMP_BUFFER);
+    labelSeed  = (byte*)XMALLOC(MAX_PRF_LABSEED, NULL, DYNAMIC_TYPE_TMP_BUFFER);
+    md5_result = (byte*)XMALLOC(MAX_PRF_DIG,     NULL, DYNAMIC_TYPE_TMP_BUFFER);
+    sha_result = (byte*)XMALLOC(MAX_PRF_DIG,     NULL, DYNAMIC_TYPE_TMP_BUFFER);
+
+    if (md5_half == NULL || sha_half == NULL || labelSeed == NULL ||
+                                     md5_result == NULL || sha_result == NULL) {
+        if (md5_half)   XFREE(md5_half,   NULL, DYNAMIC_TYPE_TMP_BUFFER);
+        if (sha_half)   XFREE(sha_half,   NULL, DYNAMIC_TYPE_TMP_BUFFER);
+        if (labelSeed)  XFREE(labelSeed,  NULL, DYNAMIC_TYPE_TMP_BUFFER);
+        if (md5_result) XFREE(md5_result, NULL, DYNAMIC_TYPE_TMP_BUFFER);
+        if (sha_result) XFREE(sha_result, NULL, DYNAMIC_TYPE_TMP_BUFFER);
+
+        return MEMORY_E;
+    }
+#endif
 
     XMEMSET(md5_result, 0, digLen);
     XMEMSET(sha_result, 0, digLen);
-    
+
     XMEMCPY(md5_half, secret, half);
     XMEMCPY(sha_half, secret + half - secLen % 2, half);
 
     XMEMCPY(labelSeed, label, labLen);
     XMEMCPY(labelSeed + labLen, seed, seedLen);
 
-    p_hash(md5_result, digLen, md5_half, half, labelSeed, labLen + seedLen,
-           md5_mac);
-    p_hash(sha_result, digLen, sha_half, half, labelSeed, labLen + seedLen,
-           sha_mac);
-    get_xor(digest, digLen, md5_result, sha_result);
+    if ((ret = p_hash(md5_result, digLen, md5_half, half, labelSeed,
+                                             labLen + seedLen, md5_mac)) == 0) {
+        if ((ret = p_hash(sha_result, digLen, sha_half, half, labelSeed,
+                                             labLen + seedLen, sha_mac)) == 0) {
+            get_xor(digest, digLen, md5_result, sha_result);
+        }
+    }
+
+#ifdef CYASSL_SMALL_STACK
+    XFREE(md5_half,   NULL, DYNAMIC_TYPE_TMP_BUFFER);
+    XFREE(sha_half,   NULL, DYNAMIC_TYPE_TMP_BUFFER);
+    XFREE(labelSeed,  NULL, DYNAMIC_TYPE_TMP_BUFFER);
+    XFREE(md5_result, NULL, DYNAMIC_TYPE_TMP_BUFFER);
+    XFREE(sha_result, NULL, DYNAMIC_TYPE_TMP_BUFFER);
+#endif
+
+    return ret;
 }
 
 #endif
@@ -184,15 +266,28 @@ static void doPRF(byte* digest, word32 digLen, const byte* secret,word32 secLen,
 
 /* Wrapper to call straight thru to p_hash in TSL 1.2 cases to remove stack
    use */
-static void PRF(byte* digest, word32 digLen, const byte* secret, word32 secLen,
+static int PRF(byte* digest, word32 digLen, const byte* secret, word32 secLen,
             const byte* label, word32 labLen, const byte* seed, word32 seedLen,
             int useAtLeastSha256, int hash_type)
 {
+    int ret = 0;
+
     if (useAtLeastSha256) {
-        byte labelSeed[MAX_PRF_LABSEED];    /* labLen + seedLen is real size */
+#ifdef CYASSL_SMALL_STACK
+        byte* labelSeed;
+#else
+        byte labelSeed[MAX_PRF_LABSEED]; /* labLen + seedLen is real size */
+#endif
 
         if (labLen + seedLen > MAX_PRF_LABSEED)
-            return;
+            return BUFFER_E;
+        
+#ifdef CYASSL_SMALL_STACK
+        labelSeed = (byte*)XMALLOC(MAX_PRF_LABSEED, NULL,
+                                                       DYNAMIC_TYPE_TMP_BUFFER);
+        if (labelSeed == NULL)
+           return MEMORY_E;
+#endif
 
         XMEMCPY(labelSeed, label, labLen);
         XMEMCPY(labelSeed + labLen, seed, seedLen);
@@ -201,13 +296,21 @@ static void PRF(byte* digest, word32 digLen, const byte* secret, word32 secLen,
          * should use better. */
         if (hash_type < sha256_mac)
             hash_type = sha256_mac;
-        p_hash(digest, digLen, secret, secLen, labelSeed, labLen + seedLen,
-               hash_type);
+        ret = p_hash(digest, digLen, secret, secLen, labelSeed,
+                     labLen + seedLen, hash_type);
+
+#ifdef CYASSL_SMALL_STACK
+        XFREE(labelSeed, NULL, DYNAMIC_TYPE_TMP_BUFFER);
+#endif
     }
 #ifndef NO_OLD_TLS
-    else
-        doPRF(digest, digLen, secret, secLen, label, labLen, seed, seedLen);
+    else {
+        ret = doPRF(digest, digLen, secret, secLen, label, labLen, seed,
+                    seedLen);
+    }
 #endif
+
+    return ret;
 }
 
 
@@ -218,7 +321,7 @@ static void PRF(byte* digest, word32 digLen, const byte* secret, word32 secLen,
 #endif
 
 
-void BuildTlsFinished(CYASSL* ssl, Hashes* hashes, const byte* sender)
+int BuildTlsFinished(CYASSL* ssl, Hashes* hashes, const byte* sender)
 {
     const byte* side;
     byte        handshake_hash[HSHASH_SZ];
@@ -232,13 +335,21 @@ void BuildTlsFinished(CYASSL* ssl, Hashes* hashes, const byte* sender)
     if (IsAtLeastTLSv1_2(ssl)) {
 #ifndef NO_SHA256
         if (ssl->specs.mac_algorithm <= sha256_mac) {
-            Sha256Final(&ssl->hashSha256, handshake_hash);
+            int ret = Sha256Final(&ssl->hashSha256, handshake_hash);
+
+            if (ret != 0)
+                return ret;
+
             hashSz = SHA256_DIGEST_SIZE;
         }
 #endif
 #ifdef CYASSL_SHA384
         if (ssl->specs.mac_algorithm == sha384_mac) {
-            Sha384Final(&ssl->hashSha384, handshake_hash);
+            int ret = Sha384Final(&ssl->hashSha384, handshake_hash);
+
+            if (ret != 0)
+                return ret;
+
             hashSz = SHA384_DIGEST_SIZE;
         }
 #endif
@@ -249,9 +360,9 @@ void BuildTlsFinished(CYASSL* ssl, Hashes* hashes, const byte* sender)
     else
         side = tls_server;
 
-    PRF((byte*)hashes, TLS_FINISHED_SZ, ssl->arrays->masterSecret, SECRET_LEN,
-        side, FINISHED_LABEL_SZ, handshake_hash, hashSz, IsAtLeastTLSv1_2(ssl),
-        ssl->specs.mac_algorithm);
+    return PRF((byte*)hashes, TLS_FINISHED_SZ, ssl->arrays->masterSecret,
+               SECRET_LEN, side, FINISHED_LABEL_SZ, handshake_hash, hashSz,
+               IsAtLeastTLSv1_2(ssl), ssl->specs.mac_algorithm);
 }
 
 
@@ -293,48 +404,95 @@ static const byte master_label[MASTER_LABEL_SZ + 1] = "master secret";
 static const byte key_label   [KEY_LABEL_SZ + 1]    = "key expansion";
 
 
+/* External facing wrapper so user can call as well, 0 on success */
+int CyaSSL_DeriveTlsKeys(byte* key_data, word32 keyLen,
+                         const byte* ms, word32 msLen,
+                         const byte* sr, const byte* cr,
+                         int tls1_2, int hash_type)
+{
+    byte  seed[SEED_LEN];
+
+    XMEMCPY(seed,           sr, RAN_LEN);
+    XMEMCPY(seed + RAN_LEN, cr, RAN_LEN);
+
+    return PRF(key_data, keyLen, ms, msLen, key_label, KEY_LABEL_SZ,
+               seed, SEED_LEN, tls1_2, hash_type);
+}
+
+
 int DeriveTlsKeys(CYASSL* ssl)
 {
-    int length = 2 * ssl->specs.hash_size + 
-                 2 * ssl->specs.key_size  +
-                 2 * ssl->specs.iv_size;
-    byte         seed[SEED_LEN];
-    byte         key_data[MAX_PRF_DIG];
+    int   ret;
+    int   length = 2 * ssl->specs.hash_size + 
+                   2 * ssl->specs.key_size  +
+                   2 * ssl->specs.iv_size;
+#ifdef CYASSL_SMALL_STACK
+    byte* key_data;
+#else
+    byte  key_data[MAX_PRF_DIG];
+#endif
 
-    XMEMCPY(seed, ssl->arrays->serverRandom, RAN_LEN);
-    XMEMCPY(&seed[RAN_LEN], ssl->arrays->clientRandom, RAN_LEN);
+#ifdef CYASSL_SMALL_STACK
+    key_data = (byte*)XMALLOC(MAX_PRF_DIG, NULL, DYNAMIC_TYPE_TMP_BUFFER);
+    if (key_data == NULL) {
+        return MEMORY_E;
+    }
+#endif
 
-    PRF(key_data, length, ssl->arrays->masterSecret, SECRET_LEN, key_label,
-        KEY_LABEL_SZ, seed, SEED_LEN, IsAtLeastTLSv1_2(ssl),
-        ssl->specs.mac_algorithm);
+    ret = CyaSSL_DeriveTlsKeys(key_data, length,
+                           ssl->arrays->masterSecret, SECRET_LEN,
+                           ssl->arrays->serverRandom, ssl->arrays->clientRandom,
+                           IsAtLeastTLSv1_2(ssl), ssl->specs.mac_algorithm);
+    if (ret == 0)
+        ret = StoreKeys(ssl, key_data);
 
-    return StoreKeys(ssl, key_data);
+#ifdef CYASSL_SMALL_STACK
+    XFREE(key_data, NULL, DYNAMIC_TYPE_TMP_BUFFER);
+#endif
+
+    return ret;
+}
+
+
+/* External facing wrapper so user can call as well, 0 on success */
+int CyaSSL_MakeTlsMasterSecret(byte* ms, word32 msLen,
+                               const byte* pms, word32 pmsLen,
+                               const byte* cr, const byte* sr,
+                               int tls1_2, int hash_type)
+{
+    byte  seed[SEED_LEN];
+
+    XMEMCPY(seed,           cr, RAN_LEN);
+    XMEMCPY(seed + RAN_LEN, sr, RAN_LEN);
+
+    return PRF(ms, msLen, pms, pmsLen, master_label, MASTER_LABEL_SZ,
+               seed, SEED_LEN, tls1_2, hash_type);
 }
 
 
 int MakeTlsMasterSecret(CYASSL* ssl)
 {
-    byte seed[SEED_LEN];
-    
-    XMEMCPY(seed, ssl->arrays->clientRandom, RAN_LEN);
-    XMEMCPY(&seed[RAN_LEN], ssl->arrays->serverRandom, RAN_LEN);
+    int   ret;
 
-    PRF(ssl->arrays->masterSecret, SECRET_LEN,
-        ssl->arrays->preMasterSecret, ssl->arrays->preMasterSz,
-        master_label, MASTER_LABEL_SZ, 
-        seed, SEED_LEN, IsAtLeastTLSv1_2(ssl), ssl->specs.mac_algorithm);
+    ret = CyaSSL_MakeTlsMasterSecret(ssl->arrays->masterSecret, SECRET_LEN,
+              ssl->arrays->preMasterSecret, ssl->arrays->preMasterSz,
+              ssl->arrays->clientRandom, ssl->arrays->serverRandom,
+              IsAtLeastTLSv1_2(ssl), ssl->specs.mac_algorithm);
 
-#ifdef SHOW_SECRETS
-    {
+    if (ret == 0) {
+    #ifdef SHOW_SECRETS
         int i;
+
         printf("master secret: ");
         for (i = 0; i < SECRET_LEN; i++)
             printf("%02x", ssl->arrays->masterSecret[i]);
         printf("\n");
-    }
-#endif
+    #endif
 
-    return DeriveTlsKeys(ssl);
+        ret = DeriveTlsKeys(ssl);
+    }
+
+    return ret;
 }
 
 
@@ -343,21 +501,35 @@ int MakeTlsMasterSecret(CYASSL* ssl)
 int CyaSSL_make_eap_keys(CYASSL* ssl, void* msk, unsigned int len,
                                                               const char* label)
 {
-    byte seed[SEED_LEN];
+    int   ret;
+#ifdef CYASSL_SMALL_STACK
+    byte* seed;
+#else
+    byte  seed[SEED_LEN];
+#endif
+
+#ifdef CYASSL_SMALL_STACK
+    seed = (byte*)XMALLOC(SEED_LEN, NULL, DYNAMIC_TYPE_TMP_BUFFER);
+    if (seed == NULL)
+        return MEMORY_E;
+#endif
 
     /*
      * As per RFC-5281, the order of the client and server randoms is reversed
      * from that used by the TLS protocol to derive keys.
      */
-    XMEMCPY(seed, ssl->arrays->clientRandom, RAN_LEN);
-    XMEMCPY(&seed[RAN_LEN], ssl->arrays->serverRandom, RAN_LEN);
+    XMEMCPY(seed,           ssl->arrays->clientRandom, RAN_LEN);
+    XMEMCPY(seed + RAN_LEN, ssl->arrays->serverRandom, RAN_LEN);
 
-    PRF((byte*)msk, len,
-        ssl->arrays->masterSecret, SECRET_LEN,
-        (const byte *)label, (word32)strlen(label),
-        seed, SEED_LEN, IsAtLeastTLSv1_2(ssl), ssl->specs.mac_algorithm);
+    ret = PRF((byte*)msk, len, ssl->arrays->masterSecret, SECRET_LEN,
+              (const byte *)label, (word32)strlen(label), seed, SEED_LEN,
+              IsAtLeastTLSv1_2(ssl), ssl->specs.mac_algorithm);
 
-    return 0;
+#ifdef CYASSL_SMALL_STACK
+    XFREE(seed, NULL, DYNAMIC_TYPE_TMP_BUFFER);
+#endif
+
+    return ret;
 }
 
 
@@ -498,47 +670,110 @@ int CyaSSL_SetTlsHmacInner(CYASSL* ssl, byte* inner, word32 sz, int content,
 
 
 /* TLS type HMAC */
-void TLS_hmac(CYASSL* ssl, byte* digest, const byte* in, word32 sz,
+int TLS_hmac(CYASSL* ssl, byte* digest, const byte* in, word32 sz,
               int content, int verify)
 {
     Hmac hmac;
+    int  ret;
     byte myInner[CYASSL_TLS_HMAC_INNER_SZ];
+
+    if (ssl == NULL)
+        return BAD_FUNC_ARG;
     
+#ifdef HAVE_FUZZER
+    if (ssl->fuzzerCb)
+        ssl->fuzzerCb(ssl, in, sz, FUZZ_HMAC, ssl->fuzzerCtx);
+#endif
+
     CyaSSL_SetTlsHmacInner(ssl, myInner, sz, content, verify);
 
-    HmacSetKey(&hmac, CyaSSL_GetHmacType(ssl), CyaSSL_GetMacSecret(ssl, verify),
-               ssl->specs.hash_size);
-    HmacUpdate(&hmac, myInner, sizeof(myInner));
-    HmacUpdate(&hmac, in, sz);                                /* content */
-    HmacFinal(&hmac, digest);
+    ret = HmacSetKey(&hmac, CyaSSL_GetHmacType(ssl),
+                     CyaSSL_GetMacSecret(ssl, verify), ssl->specs.hash_size);
+    if (ret != 0)
+        return ret;
+    ret = HmacUpdate(&hmac, myInner, sizeof(myInner));
+    if (ret != 0)
+        return ret;
+    ret = HmacUpdate(&hmac, in, sz);                                /* content */
+    if (ret != 0)
+        return ret;
+    ret = HmacFinal(&hmac, digest);
+    if (ret != 0)
+        return ret;
+
+    return 0;
 }
 
 #ifdef HAVE_TLS_EXTENSIONS
 
+
+/** Supports up to 64 flags. Update as needed. */
+#define SEMAPHORE_SIZE 8
+
+
+static INLINE word16 TLSX_ToSemaphore(word16 type)
+{
+    switch (type) {
+        case SECURE_RENEGOTIATION:
+            return 63;
+
+        default:
+            if (type > 62) {
+                /* This message SHOULD only happens during the adding of
+                   new TLS extensions in which its IANA number overflows
+                   the current semaphore's range, or if its number already
+                   is assigned to be used by another extension.
+                   Use this check value for the new extension and decrement
+                   the check value by one. */
+                CYASSL_MSG("### TLSX semaphore colision or overflow detected!");
+            }
+    }
+    
+    return type;
+}
+
+
 #define IS_OFF(semaphore, light) \
     ((semaphore)[(light) / 8] ^  (byte) (0x01 << ((light) % 8)))
+
 
 #define TURN_ON(semaphore, light) \
     ((semaphore)[(light) / 8] |= (byte) (0x01 << ((light) % 8)))
 
-static int TLSX_Append(TLSX** list, TLSX_Type type)
+
+static int TLSX_Push(TLSX** list, TLSX_Type type, void* data)
 {
     TLSX* extension;
 
-    if (list == NULL) /* won't check type since this function is static */
-        return BAD_FUNC_ARG;
-
-    if ((extension = XMALLOC(sizeof(TLSX), 0, DYNAMIC_TYPE_TLSX)) == NULL)
+    extension = (TLSX*)XMALLOC(sizeof(TLSX), 0, DYNAMIC_TYPE_TLSX);
+    if (extension == NULL)
         return MEMORY_E;
 
     extension->type = type;
-    extension->data = NULL;
+    extension->data = data;
     extension->resp = 0;
     extension->next = *list;
     *list = extension;
 
+    /* remove duplicated extensions, there should be only one of each type. */
+    do {
+        if (extension->next && extension->next->type == type) {
+            TLSX *next = extension->next;
+
+            extension->next = next->next;
+            next->next = NULL;
+
+            TLSX_FreeAll(next);
+
+            /* there is no way to occur more than */
+            /* two extensions of the same type.   */
+            break;
+        }
+    } while ((extension = extension->next));
+
     return 0;
 }
+
 
 #ifndef NO_CYASSL_SERVER
 
@@ -596,7 +831,7 @@ static int TLSX_SNI_Append(SNI** list, byte type, const void* data, word16 size)
             sni->data.host_name = XMALLOC(size + 1, 0, DYNAMIC_TYPE_TLSX);
 
             if (sni->data.host_name) {
-                XSTRNCPY(sni->data.host_name, (const char*) data, size);
+                XSTRNCPY(sni->data.host_name, (const char*)data, size);
                 sni->data.host_name[size] = 0;
             } else {
                 XFREE(sni, 0, DYNAMIC_TYPE_TLSX);
@@ -608,7 +843,6 @@ static int TLSX_SNI_Append(SNI** list, byte type, const void* data, word16 size)
         default: /* invalid type */
             XFREE(sni, 0, DYNAMIC_TYPE_TLSX);
             return BAD_FUNC_ARG;
-        break;
     }
 
     sni->type = type;
@@ -636,7 +870,7 @@ static word16 TLSX_SNI_GetSize(SNI* list)
 
         switch (sni->type) {
             case CYASSL_SNI_HOST_NAME:
-                length += XSTRLEN((char*) sni->data.host_name);
+                length += XSTRLEN((char*)sni->data.host_name);
             break;
         }
     }
@@ -657,7 +891,7 @@ static word16 TLSX_SNI_Write(SNI* list, byte* output)
 
         switch (sni->type) {
             case CYASSL_SNI_HOST_NAME:
-                length = XSTRLEN((char*) sni->data.host_name);
+                length = XSTRLEN((char*)sni->data.host_name);
 
                 c16toa(length, output + offset); /* sni length */
                 offset += OPAQUE16_LEN;
@@ -754,7 +988,7 @@ static int TLSX_SNI_Parse(CYASSL* ssl, byte* input, word16 length,
         if (offset + size > length)
             return BUFFER_ERROR;
 
-        if (!(sni = TLSX_SNI_Find((SNI *) extension->data, type))) {
+        if (!(sni = TLSX_SNI_Find((SNI*)extension->data, type))) {
             continue; /* not using this SNI type */
         }
 
@@ -762,7 +996,7 @@ static int TLSX_SNI_Parse(CYASSL* ssl, byte* input, word16 length,
             case CYASSL_SNI_HOST_NAME: {
                 byte matched = (XSTRLEN(sni->data.host_name) == size)
                             && (XSTRNCMP(sni->data.host_name,
-                                     (const char *) input + offset, size) == 0);
+                                       (const char*)input + offset, size) == 0);
 
                 if (matched || sni->options & CYASSL_SNI_ANSWER_ON_MISMATCH) {
                     int r = TLSX_UseSNI(&ssl->extensions,
@@ -792,7 +1026,7 @@ static int TLSX_SNI_Parse(CYASSL* ssl, byte* input, word16 length,
 
 int TLSX_UseSNI(TLSX** extensions, byte type, const void* data, word16 size)
 {
-    TLSX* extension = NULL;
+    TLSX* extension = TLSX_Find(*extensions, SERVER_NAME_INDICATION);
     SNI*  sni       = NULL;
     int   ret       = 0;
 
@@ -802,37 +1036,30 @@ int TLSX_UseSNI(TLSX** extensions, byte type, const void* data, word16 size)
     if ((ret = TLSX_SNI_Append(&sni, type, data, size)) != 0)
         return ret;
 
-    extension = *extensions;
-
-    /* find SNI extension if it already exists. */
-    while (extension && extension->type != SERVER_NAME_INDICATION)
-        extension = extension->next;
-
-    /* push new SNI extension if it doesn't exists. */
     if (!extension) {
-        if ((ret = TLSX_Append(extensions, SERVER_NAME_INDICATION)) != 0) {
+        if ((ret = TLSX_Push(extensions, SERVER_NAME_INDICATION, (void*)sni)) 
+                                                                         != 0) {
             TLSX_SNI_Free(sni);
             return ret;
         }
-
-        extension = *extensions;
     }
+    else {
+        /* push new SNI object to extension data. */
+        sni->next = (SNI*)extension->data;
+        extension->data = (void*)sni;        
 
-    /* push new SNI object to extension data. */
-    sni->next = (SNI*) extension->data;
-    extension->data = (void*) sni;
+        /* look for another server name of the same type to remove */
+        do {
+            if (sni->next && sni->next->type == type) {
+                SNI *next = sni->next;
 
-    /* look for another server name of the same type to remove (replacement) */
-    do {
-        if (sni->next && sni->next->type == type) {
-            SNI *next = sni->next;
+                sni->next = next->next;
+                TLSX_SNI_Free(next);
 
-            sni->next = next->next;
-            TLSX_SNI_Free(next);
-
-            break;
-        }
-    } while ((sni = sni->next));
+                break;
+            }
+        } while ((sni = sni->next));
+    }
 
     return SSL_SUCCESS;
 }
@@ -881,7 +1108,7 @@ int TLSX_SNI_GetFromBuffer(const byte* clientHello, word32 helloSz,
         return BUFFER_ERROR;
 
     if (clientHello[offset++] < TLSv1_MINOR)
-        return BUFFER_ERROR;
+        return SNI_UNSUPPORTED;
 
     ato16(clientHello + offset, &len16);
     offset += OPAQUE16_LEN;
@@ -938,7 +1165,7 @@ int TLSX_SNI_GetFromBuffer(const byte* clientHello, word32 helloSz,
     if (helloSz < offset + len16)
         return BUFFER_ERROR;
 
-    while (len16 > OPAQUE16_LEN + OPAQUE16_LEN) {
+    while (len16 >= OPAQUE16_LEN + OPAQUE16_LEN) {
         word16 extType;
         word16 extLen;
 
@@ -988,7 +1215,7 @@ int TLSX_SNI_GetFromBuffer(const byte* clientHello, word32 helloSz,
         len16 -= min(2 * OPAQUE16_LEN + extLen, len16);
     }
 
-    return len16 ? BUFFER_ERROR : SSL_SUCCESS;
+    return len16 ? BUFFER_ERROR : 0;
 }
 
 #endif
@@ -1050,9 +1277,8 @@ static int TLSX_MFL_Parse(CYASSL* ssl, byte* input, word16 length,
 
 int TLSX_UseMaxFragment(TLSX** extensions, byte mfl)
 {
-    TLSX* extension = NULL;
-    byte* data      = NULL;
-    int   ret       = 0;
+    byte* data = NULL;
+    int   ret  = 0;
 
     if (extensions == NULL)
         return BAD_FUNC_ARG;
@@ -1066,28 +1292,10 @@ int TLSX_UseMaxFragment(TLSX** extensions, byte mfl)
     data[0] = mfl;
 
     /* push new MFL extension. */
-    if ((ret = TLSX_Append(extensions, MAX_FRAGMENT_LENGTH)) != 0) {
+    if ((ret = TLSX_Push(extensions, MAX_FRAGMENT_LENGTH, data)) != 0) {
         XFREE(data, 0, DYNAMIC_TYPE_TLSX);
         return ret;
     }
-
-    /* place new mfl to extension data. */
-    extension = *extensions;
-    extension->data = (void*) data;
-
-    /* remove duplicated extensions */
-    do {
-        if (extension->next && extension->next->type == MAX_FRAGMENT_LENGTH) {
-            TLSX *next = extension->next;
-
-            extension->next = next->next;
-            next->next = NULL;
-
-            TLSX_FreeAll(next);
-
-            break;
-        }
-    } while ((extension = extension->next));
 
     return SSL_SUCCESS;
 }
@@ -1108,20 +1316,6 @@ int TLSX_UseMaxFragment(TLSX** extensions, byte mfl)
 #endif /* HAVE_MAX_FRAGMENT */
 
 #ifdef HAVE_TRUNCATED_HMAC
-
-int TLSX_UseTruncatedHMAC(TLSX** extensions)
-{
-    int ret = 0;
-
-    if (extensions == NULL)
-        return BAD_FUNC_ARG;
-
-    if (!TLSX_Find(*extensions, TRUNCATED_HMAC))
-        if ((ret = TLSX_Append(extensions, TRUNCATED_HMAC)) != 0)
-            return ret;
-
-    return SSL_SUCCESS;
-}
 
 static int TLSX_THM_Parse(CYASSL* ssl, byte* input, word16 length,
                                                                  byte isRequest)
@@ -1144,6 +1338,19 @@ static int TLSX_THM_Parse(CYASSL* ssl, byte* input, word16 length,
     return 0;
 }
 
+int TLSX_UseTruncatedHMAC(TLSX** extensions)
+{
+    int ret = 0;
+
+    if (extensions == NULL)
+        return BAD_FUNC_ARG;
+
+    if ((ret = TLSX_Push(extensions, TRUNCATED_HMAC, NULL)) != 0)
+        return ret;
+
+    return SSL_SUCCESS;
+}
+
 #define THM_PARSE TLSX_THM_Parse
 
 #else
@@ -1155,8 +1362,8 @@ static int TLSX_THM_Parse(CYASSL* ssl, byte* input, word16 length,
 #ifdef HAVE_SUPPORTED_CURVES
 
 #ifndef HAVE_ECC
-#error "Elliptic Curves Extension requires Elliptic Curve Cryptography. \
-Use --enable-ecc in the configure script or define HAVE_ECC."
+#error Elliptic Curves Extension requires Elliptic Curve Cryptography. \
+       Use --enable-ecc in the configure script or define HAVE_ECC.
 #endif
 
 static void TLSX_EllipticCurve_FreeAll(EllipticCurve* list)
@@ -1198,7 +1405,7 @@ static void TLSX_EllipticCurve_ValidateRequest(CYASSL* ssl, byte* semaphore)
             return;
 
     /* No elliptic curve suite found */
-    TURN_ON(semaphore, ELLIPTIC_CURVES);
+    TURN_ON(semaphore, TLSX_ToSemaphore(ELLIPTIC_CURVES));
 }
 
 static word16 TLSX_EllipticCurve_GetSize(EllipticCurve* list)
@@ -1279,6 +1486,9 @@ int TLSX_ValidateEllipticCurves(CYASSL* ssl, byte first, byte second) {
     word16         octets    = 0; /* acording to 'ecc_set_type ecc_sets[];' */
     int            sig       = 0; /* valitade signature */
     int            key       = 0; /* validate key       */
+
+    (void)oid;
+    (void)octets;
 
     if (!extension)
         return 1; /* no suite restriction */
@@ -1366,7 +1576,7 @@ int TLSX_ValidateEllipticCurves(CYASSL* ssl, byte first, byte second) {
 
 int TLSX_UseSupportedCurve(TLSX** extensions, word16 name)
 {
-    TLSX*          extension = NULL;
+    TLSX*          extension = TLSX_Find(*extensions, ELLIPTIC_CURVES);
     EllipticCurve* curve     = NULL;
     int            ret       = 0;
 
@@ -1376,37 +1586,29 @@ int TLSX_UseSupportedCurve(TLSX** extensions, word16 name)
     if ((ret = TLSX_EllipticCurve_Append(&curve, name)) != 0)
         return ret;
 
-    extension = *extensions;
-
-    /* find EllipticCurve extension if it already exists. */
-    while (extension && extension->type != ELLIPTIC_CURVES)
-        extension = extension->next;
-
-    /* push new EllipticCurve extension if it doesn't exists. */
     if (!extension) {
-        if ((ret = TLSX_Append(extensions, ELLIPTIC_CURVES)) != 0) {
+        if ((ret = TLSX_Push(extensions, ELLIPTIC_CURVES, curve)) != 0) {
             XFREE(curve, 0, DYNAMIC_TYPE_TLSX);
             return ret;
         }
-
-        extension = *extensions;
     }
+    else {
+        /* push new EllipticCurve object to extension data. */
+        curve->next = (EllipticCurve*)extension->data;
+        extension->data = (void*)curve;
 
-    /* push new EllipticCurve object to extension data. */
-    curve->next = (EllipticCurve*) extension->data;
-    extension->data = (void*) curve;
+        /* look for another curve of the same name to remove (replacement) */
+        do {
+            if (curve->next && curve->next->name == name) {
+                EllipticCurve *next = curve->next;
 
-    /* look for another curve of the same name to remove (replacement) */
-    do {
-        if (curve->next && curve->next->name == name) {
-            EllipticCurve *next = curve->next;
+                curve->next = next->next;
+                XFREE(next, 0, DYNAMIC_TYPE_TLSX);
 
-            curve->next = next->next;
-            XFREE(next, 0, DYNAMIC_TYPE_TLSX);
-
-            break;
-        }
-    } while ((curve = curve->next));
+                break;
+            }
+        } while ((curve = curve->next));        
+    }
 
     return SSL_SUCCESS;
 }
@@ -1438,6 +1640,238 @@ int TLSX_UseSupportedCurve(TLSX** extensions, word16 name)
 
 #endif /* HAVE_SUPPORTED_CURVES */
 
+#ifdef HAVE_SECURE_RENEGOTIATION
+
+static byte TLSX_SecureRenegotiation_GetSize(SecureRenegotiation* data,
+                                                                  int isRequest)
+{
+    byte length = OPAQUE8_LEN; /* empty info length */
+
+    if (data->enabled) {
+        /* client sends client_verify_data only */
+        length += TLS_FINISHED_SZ;
+
+        /* server also sends server_verify_data */
+        if (!isRequest)
+            length += TLS_FINISHED_SZ;
+    }
+
+    return length;
+}
+
+static word16 TLSX_SecureRenegotiation_Write(SecureRenegotiation* data,
+                                                    byte* output, int isRequest)
+{   
+    word16 offset = OPAQUE8_LEN; /* RenegotiationInfo length */
+
+    if (data->enabled) {
+        /* client sends client_verify_data only */
+        XMEMCPY(output + offset, data->client_verify_data, TLS_FINISHED_SZ);
+        offset += TLS_FINISHED_SZ;
+
+        /* server also sends server_verify_data */
+        if (!isRequest) {
+            XMEMCPY(output + offset, data->server_verify_data, TLS_FINISHED_SZ);
+            offset += TLS_FINISHED_SZ;
+        }
+    }
+
+    output[0] = offset - 1;  /* info length - self */
+    
+    return offset;
+}   
+    
+static int TLSX_SecureRenegotiation_Parse(CYASSL* ssl, byte* input, 
+                                                  word16 length, byte isRequest)
+{
+    int ret = SECURE_RENEGOTIATION_E;
+
+    if (length >= OPAQUE8_LEN) {
+        if (ssl->secure_renegotiation == NULL) {
+        #ifndef NO_CYASSL_SERVER
+            if (isRequest && *input == 0) {
+                ret = 0;  /* don't reply, user didn't enable */
+            }
+        #endif
+        }
+        else if (isRequest) {
+        #ifndef NO_CYASSL_SERVER
+            if (*input == TLS_FINISHED_SZ) {
+                /* TODO compare client_verify_data */
+                ret = 0;
+            }
+        #endif
+        }
+        else {
+        #ifndef NO_CYASSL_CLIENT
+            if (!ssl->secure_renegotiation->enabled) {
+                if (*input == 0) {
+                    ssl->secure_renegotiation->enabled = 1;
+                    ret = 0;                    
+                }
+            }
+            else if (*input == 2 * TLS_FINISHED_SZ) {
+                /* TODO compare client_verify_data and server_verify_data */
+                ret = 0;
+            }
+        #endif
+        }
+    }
+
+    if (ret != 0) {
+        /* TODO: turn on fatal error at ssl level too */
+        SendAlert(ssl, alert_fatal, handshake_failure);
+    }
+
+    return ret;
+}
+
+int TLSX_UseSecureRenegotiation(TLSX** extensions)
+{
+    int ret = 0;
+    SecureRenegotiation* data = NULL;
+    
+    data = (SecureRenegotiation*)XMALLOC(sizeof(SecureRenegotiation), NULL,
+                                                             DYNAMIC_TYPE_TLSX);
+    if (data == NULL)
+        return MEMORY_E;
+
+    XMEMSET(data, 0, sizeof(SecureRenegotiation));
+
+    ret = TLSX_Push(extensions, SECURE_RENEGOTIATION, data);
+    if (ret != 0) {
+        XFREE(data, 0, DYNAMIC_TYPE_TLSX);
+        return ret;
+    }
+
+    return SSL_SUCCESS;
+}
+
+
+#define SCR_FREE_ALL(data) XFREE(data, NULL, DYNAMIC_TYPE_TLSX)
+#define SCR_GET_SIZE       TLSX_SecureRenegotiation_GetSize
+#define SCR_WRITE          TLSX_SecureRenegotiation_Write
+#define SCR_PARSE          TLSX_SecureRenegotiation_Parse
+
+#else
+
+#define SCR_FREE_ALL(a)
+#define SCR_GET_SIZE(a, b)    0
+#define SCR_WRITE(a, b, c)    0
+#define SCR_PARSE(a, b, c, d) 0
+
+#endif /* HAVE_SECURE_RENEGOTIATION */
+
+#ifdef HAVE_SESSION_TICKET
+
+static void TLSX_SessionTicket_ValidateRequest(CYASSL* ssl)
+{
+    TLSX*          extension = TLSX_Find(ssl->extensions, SESSION_TICKET);
+    SessionTicket* ticket    = extension ? extension->data : NULL;
+
+    if (ticket) {
+        /* TODO validate ticket timeout here! */
+        if (ticket->lifetime == 0xfffffff) {
+            /* send empty ticket on timeout */
+            TLSX_UseSessionTicket(&ssl->extensions, NULL);
+        }
+    }
+}
+
+
+static word16 TLSX_SessionTicket_GetSize(SessionTicket* ticket, int isRequest)
+{
+    return isRequest && ticket ? ticket->size : 0;
+}
+
+static word16 TLSX_SessionTicket_Write(SessionTicket* ticket, byte* output,
+                                                                  int isRequest)
+{
+    int offset = 0; /* empty ticket */
+    
+    if (isRequest && ticket) {
+        XMEMCPY(output + offset, ticket->data, ticket->size);
+        offset += ticket->size;
+    }
+
+    return offset;
+}
+
+
+static int TLSX_SessionTicket_Parse(CYASSL* ssl, byte* input, word16 length,
+                                                                 byte isRequest)
+{
+    if (!isRequest) {
+        if (length != 0)
+            return BUFFER_ERROR;
+        
+        ssl->expect_session_ticket = 1;
+    }
+    else {
+        /* TODO server side */
+        (void)input;        
+    }
+
+    return 0;
+}
+
+CYASSL_LOCAL SessionTicket* TLSX_SessionTicket_Create(word32 lifetime,
+                                                       byte* data, word16 size)
+{
+    SessionTicket* ticket = (SessionTicket*)XMALLOC(sizeof(SessionTicket),
+                                                       NULL, DYNAMIC_TYPE_TLSX);
+    if (ticket) {
+        ticket->data = (byte*)XMALLOC(size, NULL, DYNAMIC_TYPE_TLSX);
+        if (ticket->data == NULL) {
+            XFREE(ticket, NULL, DYNAMIC_TYPE_TLSX);
+            return NULL;
+        }
+
+        XMEMCPY(ticket->data, data, size);
+        ticket->size     = size;
+        ticket->lifetime = lifetime;
+    }
+
+    return ticket;
+}
+CYASSL_LOCAL void TLSX_SessionTicket_Free(SessionTicket* ticket)
+{
+    if (ticket) {
+        XFREE(ticket->data, NULL, DYNAMIC_TYPE_TLSX);
+        XFREE(ticket,       NULL, DYNAMIC_TYPE_TLSX);
+    }
+}
+
+int TLSX_UseSessionTicket(TLSX** extensions, SessionTicket* ticket)
+{
+    int ret = 0;
+
+    if (extensions == NULL)
+        return BAD_FUNC_ARG;
+
+    /* If the ticket is NULL, the client will request a new ticket from the
+       server. Otherwise, the client will use it in the next client hello. */
+    if ((ret = TLSX_Push(extensions, SESSION_TICKET, (void*)ticket)) != 0)
+        return ret;
+
+    return SSL_SUCCESS;
+}
+
+#define STK_VALIDATE_REQUEST TLSX_SessionTicket_ValidateRequest
+#define STK_GET_SIZE         TLSX_SessionTicket_GetSize
+#define STK_WRITE            TLSX_SessionTicket_Write
+#define STK_PARSE            TLSX_SessionTicket_Parse
+
+#else
+
+#define STK_VALIDATE_REQUEST(a)
+#define STK_GET_SIZE(a, b)      0
+#define STK_WRITE(a, b, c)      0
+#define STK_PARSE(a, b, c, d)   0
+
+#endif /* HAVE_SESSION_TICKET */
+
+
 TLSX* TLSX_Find(TLSX* list, TLSX_Type type)
 {
     TLSX* extension = list;
@@ -1457,7 +1891,7 @@ void TLSX_FreeAll(TLSX* list)
 
         switch (extension->type) {
             case SERVER_NAME_INDICATION:
-                SNI_FREE_ALL((SNI *) extension->data);
+                SNI_FREE_ALL((SNI*)extension->data);
                 break;
 
             case MAX_FRAGMENT_LENGTH:
@@ -1471,10 +1905,22 @@ void TLSX_FreeAll(TLSX* list)
             case ELLIPTIC_CURVES:
                 EC_FREE_ALL(extension->data);
                 break;
+
+            case SECURE_RENEGOTIATION:
+                SCR_FREE_ALL(extension->data);
+                break;
+
+            case SESSION_TICKET:
+                /* Nothing to do. */
+                break;
         }
 
         XFREE(extension, 0, DYNAMIC_TYPE_TLSX);
     }
+}
+
+int TLSX_SupportExtensions(CYASSL* ssl) {
+    return ssl && (IsTLS(ssl) || ssl->version.major == DTLS_MAJOR);
 }
 
 static word16 TLSX_GetSize(TLSX* list, byte* semaphore, byte isRequest)
@@ -1488,30 +1934,39 @@ static word16 TLSX_GetSize(TLSX* list, byte* semaphore, byte isRequest)
         if (!isRequest && !extension->resp)
             continue; /* skip! */
 
-        if (IS_OFF(semaphore, extension->type)) {
-            /* type + data length */
-            length += HELLO_EXT_TYPE_SZ + OPAQUE16_LEN;
+        if (!IS_OFF(semaphore, TLSX_ToSemaphore(extension->type)))
+            continue; /* skip! */
 
-            switch (extension->type) {
-                case SERVER_NAME_INDICATION:
-                    if (isRequest)
-                        length += SNI_GET_SIZE((SNI *) extension->data);
-                    break;
-                case MAX_FRAGMENT_LENGTH:
-                    length += MFL_GET_SIZE(extension->data);
-                    break;
+        /* type + data length */
+        length += HELLO_EXT_TYPE_SZ + OPAQUE16_LEN;
 
-                case TRUNCATED_HMAC:
-                    /* empty extension. */
-                    break;
+        switch (extension->type) {
+            case SERVER_NAME_INDICATION:
+                if (isRequest)
+                    length += SNI_GET_SIZE(extension->data);
+                break;
+            case MAX_FRAGMENT_LENGTH:
+                length += MFL_GET_SIZE(extension->data);
+                break;
 
-                case ELLIPTIC_CURVES:
-                    length += EC_GET_SIZE((EllipticCurve *) extension->data);
-                    break;
-            }
+            case TRUNCATED_HMAC:
+                /* empty extension. */
+                break;
 
-            TURN_ON(semaphore, extension->type);
+            case ELLIPTIC_CURVES:
+                length += EC_GET_SIZE(extension->data);
+                break;
+
+            case SECURE_RENEGOTIATION:
+                length += SCR_GET_SIZE(extension->data, isRequest);
+                break;
+
+            case SESSION_TICKET:
+                length += STK_GET_SIZE(extension->data, isRequest);
+                break;
         }
+
+        TURN_ON(semaphore, TLSX_ToSemaphore(extension->type));
     }
 
     return length;
@@ -1530,41 +1985,48 @@ static word16 TLSX_Write(TLSX* list, byte* output, byte* semaphore,
         if (!isRequest && !extension->resp)
             continue; /* skip! */
 
-        if (IS_OFF(semaphore, extension->type)) {
-            /* extension type */
-            c16toa(extension->type, output + offset);
-            offset += HELLO_EXT_TYPE_SZ + OPAQUE16_LEN;
-            length_offset = offset;
+        if (!IS_OFF(semaphore, TLSX_ToSemaphore(extension->type)))
+            continue; /* skip! */
 
-            /* extension data should be written internally */
-            switch (extension->type) {
-                case SERVER_NAME_INDICATION:
-                    if (isRequest)
-                        offset += SNI_WRITE((SNI *) extension->data,
-                                                               output + offset);
-                    break;
+        /* extension type */
+        c16toa(extension->type, output + offset);
+        offset += HELLO_EXT_TYPE_SZ + OPAQUE16_LEN;
+        length_offset = offset;
 
-                case MAX_FRAGMENT_LENGTH:
-                    offset += MFL_WRITE((byte *) extension->data,
-                                                               output + offset);
-                    break;
+        /* extension data should be written internally */
+        switch (extension->type) {
+            case SERVER_NAME_INDICATION:
+                if (isRequest)
+                    offset += SNI_WRITE(extension->data, output + offset);
+                break;
 
-                case TRUNCATED_HMAC:
-                    /* empty extension. */
-                    break;
+            case MAX_FRAGMENT_LENGTH:
+                offset += MFL_WRITE(extension->data, output + offset);
+                break;
 
-                case ELLIPTIC_CURVES:
-                    offset += EC_WRITE((EllipticCurve *) extension->data,
-                                                               output + offset);
-                    break;
-            }
+            case TRUNCATED_HMAC:
+                /* empty extension. */
+                break;
 
-            /* writing extension data length */
-            c16toa(offset - length_offset,
-                                         output + length_offset - OPAQUE16_LEN);
+            case ELLIPTIC_CURVES:
+                offset += EC_WRITE(extension->data, output + offset);
+                break;
 
-            TURN_ON(semaphore, extension->type);
+            case SECURE_RENEGOTIATION:
+                offset += SCR_WRITE(extension->data, output + offset,
+                                                                     isRequest);
+                break;
+
+            case SESSION_TICKET:
+                offset += STK_WRITE(extension->data, output + offset,
+                                                                     isRequest);
+                break;
         }
+
+        /* writing extension data length */
+        c16toa(offset - length_offset, output + length_offset - OPAQUE16_LEN);
+
+        TURN_ON(semaphore, TLSX_ToSemaphore(extension->type));
     }
 
     return offset;
@@ -1576,10 +2038,11 @@ word16 TLSX_GetRequestSize(CYASSL* ssl)
 {
     word16 length = 0;
 
-    if (ssl && IsTLS(ssl)) {
-        byte semaphore[16] = {0};
+    if (TLSX_SupportExtensions(ssl)) {
+        byte semaphore[SEMAPHORE_SIZE] = {0};
 
         EC_VALIDATE_REQUEST(ssl, semaphore);
+        STK_VALIDATE_REQUEST(ssl);
 
         if (ssl->extensions)
             length += TLSX_GetSize(ssl->extensions, semaphore, 1);
@@ -1601,8 +2064,8 @@ word16 TLSX_WriteRequest(CYASSL* ssl, byte* output)
 {
     word16 offset = 0;
 
-    if (ssl && IsTLS(ssl) && output) {
-        byte semaphore[16] = {0};
+    if (TLSX_SupportExtensions(ssl) && output) {
+        byte semaphore[SEMAPHORE_SIZE] = {0};
 
         offset += OPAQUE16_LEN; /* extensions length */
 
@@ -1650,9 +2113,9 @@ word16 TLSX_WriteRequest(CYASSL* ssl, byte* output)
 word16 TLSX_GetResponseSize(CYASSL* ssl)
 {
     word16 length = 0;
-    byte semaphore[16] = {0};
+    byte semaphore[SEMAPHORE_SIZE] = {0};
 
-    if (ssl && IsTLS(ssl))
+    if (TLSX_SupportExtensions(ssl))
         length += TLSX_GetSize(ssl->extensions, semaphore, 0);
 
     /* All the response data is set at the ssl object only, so no ctx here. */
@@ -1667,8 +2130,8 @@ word16 TLSX_WriteResponse(CYASSL *ssl, byte* output)
 {
     word16 offset = 0;
 
-    if (ssl && IsTLS(ssl) && output) {
-        byte semaphore[16] = {0};
+    if (TLSX_SupportExtensions(ssl) && output) {
+        byte semaphore[SEMAPHORE_SIZE] = {0};
 
         offset += OPAQUE16_LEN; /* extensions length */
 
@@ -1689,7 +2152,7 @@ int TLSX_Parse(CYASSL* ssl, byte* input, word16 length, byte isRequest,
     int ret = 0;
     word16 offset = 0;
 
-    if (!ssl || !input || !suites)
+    if (!ssl || !input || (isRequest && !suites))
         return BAD_FUNC_ARG;
 
     while (ret == 0 && offset < length) {
@@ -1733,6 +2196,18 @@ int TLSX_Parse(CYASSL* ssl, byte* input, word16 length, byte isRequest,
                 ret = EC_PARSE(ssl, input + offset, size, isRequest);
                 break;
 
+            case SECURE_RENEGOTIATION:
+                CYASSL_MSG("Secure Renegotiation extension received");
+
+                ret = SCR_PARSE(ssl, input + offset, size, isRequest);
+                break;
+
+            case SESSION_TICKET:
+                CYASSL_MSG("Session Ticket extension received");
+
+                ret = STK_PARSE(ssl, input + offset, size, isRequest);
+                break;
+
             case HELLO_EXT_SIG_ALGO:
                 if (isRequest) {
                     /* do not mess with offset inside the switch! */
@@ -1764,15 +2239,9 @@ int TLSX_Parse(CYASSL* ssl, byte* input, word16 length, byte isRequest,
 /* undefining semaphore macros */
 #undef IS_OFF
 #undef TURN_ON
+#undef SEMAPHORE_SIZE
 
-#elif defined(HAVE_SNI)             \
-   || defined(HAVE_MAX_FRAGMENT)    \
-   || defined(HAVE_TRUNCATED_HMAC)  \
-   || defined(HAVE_SUPPORTED_CURVES)
-
-#error "Using TLS extensions requires HAVE_TLS_EXTENSIONS to be defined."
-
-#endif /* HAVE_TLS_EXTENSIONS */
+#endif
 
 
 #ifndef NO_CYASSL_CLIENT

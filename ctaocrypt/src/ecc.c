@@ -1,6 +1,6 @@
 /* ecc.c
  *
- * Copyright (C) 2006-2013 wolfSSL Inc.
+ * Copyright (C) 2006-2014 wolfSSL Inc.
  *
  * This file is part of CyaSSL.
  *
@@ -16,7 +16,7 @@
  *
  * You should have received a copy of the GNU General Public License
  * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA
  */
 
 
@@ -31,7 +31,7 @@
 
 #include <cyassl/ctaocrypt/ecc.h>
 #include <cyassl/ctaocrypt/asn.h>
-#include <cyassl/ctaocrypt/error.h>
+#include <cyassl/ctaocrypt/error-crypt.h>
 
 #ifdef HAVE_ECC_ENCRYPT
     #include <cyassl/ctaocrypt/hmac.h>
@@ -65,6 +65,7 @@ const ecc_set_type ecc_sets[] = {
         14,
         "SECP112R1",
         "DB7C2ABF62E35E668076BEAD208B",
+        "DB7C2ABF62E35E668076BEAD2088",
         "659EF8BA043916EEDE8911702B22",
         "DB7C2ABF62E35E7628DFAC6561C5",
         "09487239995A5EE76B55F9C2F098",
@@ -76,6 +77,7 @@ const ecc_set_type ecc_sets[] = {
         16,
         "SECP128R1",
         "FFFFFFFDFFFFFFFFFFFFFFFFFFFFFFFF",
+        "FFFFFFFDFFFFFFFFFFFFFFFFFFFFFFFC",
         "E87579C11079F43DD824993C2CEE5ED3",
         "FFFFFFFE0000000075A30D1B9038A115",
         "161FF7528B899B2D0C28607CA52C5B86",
@@ -87,6 +89,7 @@ const ecc_set_type ecc_sets[] = {
         20,
         "SECP160R1",
         "FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF7FFFFFFF",
+        "FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF7FFFFFFC",
         "1C97BEFC54BD7A8B65ACF89F81D4D4ADC565FA45",
         "0100000000000000000001F4C8F927AED3CA752257",
         "4A96B5688EF573284664698968C38BB913CBFC82",
@@ -98,6 +101,7 @@ const ecc_set_type ecc_sets[] = {
         24,
         "ECC-192",
         "FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEFFFFFFFFFFFFFFFF",
+        "FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEFFFFFFFFFFFFFFFC",
         "64210519E59C80E70FA7E9AB72243049FEB8DEECC146B9B1",
         "FFFFFFFFFFFFFFFFFFFFFFFF99DEF836146BC9B1B4D22831",
         "188DA80EB03090F67CBF20EB43A18800F4FF0AFD82FF1012",
@@ -109,6 +113,7 @@ const ecc_set_type ecc_sets[] = {
         28,
         "ECC-224",
         "FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF000000000000000000000001",
+        "FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEFFFFFFFFFFFFFFFFFFFFFFFE",
         "B4050A850C04B3ABF54132565044B0B7D7BFD8BA270B39432355FFB4",
         "FFFFFFFFFFFFFFFFFFFFFFFFFFFF16A2E0B8F03E13DD29455C5C2A3D",
         "B70E0CBD6BB4BF7F321390B94A03C1D356C21122343280D6115C1D21",
@@ -120,6 +125,7 @@ const ecc_set_type ecc_sets[] = {
         32,
         "ECC-256",
         "FFFFFFFF00000001000000000000000000000000FFFFFFFFFFFFFFFFFFFFFFFF",
+        "FFFFFFFF00000001000000000000000000000000FFFFFFFFFFFFFFFFFFFFFFFC",
         "5AC635D8AA3A93E7B3EBBD55769886BC651D06B0CC53B0F63BCE3C3E27D2604B",
         "FFFFFFFF00000000FFFFFFFFFFFFFFFFBCE6FAADA7179E84F3B9CAC2FC632551",
         "6B17D1F2E12C4247F8BCE6E563A440F277037D812DEB33A0F4A13945D898C296",
@@ -131,6 +137,7 @@ const ecc_set_type ecc_sets[] = {
         48,
         "ECC-384",
         "FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEFFFFFFFF0000000000000000FFFFFFFF",
+        "FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEFFFFFFFF0000000000000000FFFFFFFC",
         "B3312FA7E23EE7E4988E056BE3F82D19181D9C6EFE8141120314088F5013875AC656398D8A2ED19D2A85C8EDD3EC2AEF",
         "FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFC7634D81F4372DDF581A0DB248B0A77AECEC196ACCC52973",
         "AA87CA22BE8B05378EB1C71EF320AD746E1D3B628BA79B9859F741E082542A385502F25DBF55296C3A545E3872760AB7",
@@ -142,6 +149,7 @@ const ecc_set_type ecc_sets[] = {
         66,
         "ECC-521",
         "1FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF",
+        "1FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFC",
         "51953EB9618E1C9A1F929A21A0B68540EEA2DA725B99B315F3B8B489918EF109E156193951EC7E937B1652C0BD3BB1BF073573DF883D2C34F1EF451FD46B503F00",
         "1FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFA51868783BF2F966B7FCC0148F709A5D03BB5C9B8899C47AEBB6FB71E91386409",
         "C6858E06B70404E9CD9E3ECB662395B4429C648139053FB521F828AF606B4D3DBAA14B5E77EFE75928FE1DC127A2FFA8DE3348B3C1856A429BF97E7E31C2E5BD66",
@@ -150,7 +158,7 @@ const ecc_set_type ecc_sets[] = {
 #endif
 {
    0,
-   NULL, NULL, NULL, NULL, NULL, NULL
+   NULL, NULL, NULL, NULL, NULL, NULL, NULL
 }
 };
 
@@ -169,6 +177,13 @@ static int ecc_mul2add(ecc_point* A, mp_int* kA, ecc_point* B, mp_int* kB,
                        ecc_point* C, mp_int* modulus);
 #endif
 
+int mp_jacobi(mp_int* a, mp_int* p, int* c);
+int mp_sqrtmod_prime(mp_int* n, mp_int* prime, mp_int* ret);
+int mp_submod(mp_int* a, mp_int* b, mp_int* c, mp_int* d);
+
+#ifdef HAVE_COMP_KEY
+static int ecc_export_x963_compressed(ecc_key*, byte* out, word32* outLen);
+#endif
 
 /* helper for either lib */
 static int get_digit_count(mp_int* a)
@@ -180,7 +195,7 @@ static int get_digit_count(mp_int* a)
 }
 
 /* helper for either lib */
-static unsigned long get_digit(mp_int* a, int n)
+static mp_digit get_digit(mp_int* a, int n)
 {
     if (a == NULL)
         return 0;
@@ -970,8 +985,9 @@ static int ecc_mulmod(mp_int* k, ecc_point *G, ecc_point *R, mp_int* modulus,
    int           i, j, err;
    mp_int        mu;
    mp_digit      mp;
-   unsigned long buf;
-   int           first, bitbuf, bitcpy, bitcnt, mode, digidx;
+   mp_digit      buf;
+   int           first = 1, bitbuf = 0, bitcpy = 0, bitcnt = 0, mode = 0,
+                 digidx = 0;
 
    if (k == NULL || G == NULL || R == NULL || modulus == NULL)
        return ECC_BAD_ARG_E;
@@ -1159,6 +1175,168 @@ static int ecc_mulmod(mp_int* k, ecc_point *G, ecc_point *R, mp_int* modulus,
 }
 
 #undef WINSIZE
+
+#else /* ECC_TIMING_RESISTANT */
+
+/**
+   Perform a point multiplication  (timing resistant)
+   k    The scalar to multiply by
+   G    The base point
+   R    [out] Destination for kG
+   modulus  The modulus of the field the ECC curve is in
+   map      Boolean whether to map back to affine or not
+            (1==map, 0 == leave in projective)
+   return MP_OKAY on success
+*/
+#ifdef FP_ECC
+static int normal_ecc_mulmod(mp_int* k, ecc_point *G, ecc_point *R,
+                             mp_int* modulus, int map)
+#else
+static int ecc_mulmod(mp_int* k, ecc_point *G, ecc_point *R, mp_int* modulus,
+                      int map)
+#endif
+{
+   ecc_point    *tG, *M[3];
+   int           i, j, err;
+   mp_int        mu;
+   mp_digit      mp;
+   mp_digit      buf;
+   int           first = 1, bitbuf = 0, bitcpy = 0, bitcnt = 0, mode = 0,
+                 digidx = 0;
+
+   if (k == NULL || G == NULL || R == NULL || modulus == NULL)
+       return ECC_BAD_ARG_E;
+
+   /* init montgomery reduction */
+   if ((err = mp_montgomery_setup(modulus, &mp)) != MP_OKAY) {
+      return err;
+   }
+   if ((err = mp_init(&mu)) != MP_OKAY) {
+      return err;
+   }
+   if ((err = mp_montgomery_calc_normalization(&mu, modulus)) != MP_OKAY) {
+      mp_clear(&mu);
+      return err;
+   }
+
+  /* alloc ram for window temps */
+  for (i = 0; i < 3; i++) {
+      M[i] = ecc_new_point();
+      if (M[i] == NULL) {
+         for (j = 0; j < i; j++) {
+             ecc_del_point(M[j]);
+         }
+         mp_clear(&mu);
+         return MEMORY_E;
+      }
+  }
+
+   /* make a copy of G incase R==G */
+   tG = ecc_new_point();
+   if (tG == NULL)
+       err = MEMORY_E;
+
+   /* tG = G  and convert to montgomery */
+   if (err == MP_OKAY) {
+       err = mp_mulmod(&G->x, &mu, modulus, &tG->x);
+       if (err == MP_OKAY)
+           err = mp_mulmod(&G->y, &mu, modulus, &tG->y);
+       if (err == MP_OKAY)
+           err = mp_mulmod(&G->z, &mu, modulus, &tG->z);
+   }
+   mp_clear(&mu);
+
+   /* calc the M tab */
+   /* M[0] == G */
+   if (err == MP_OKAY)
+       err = mp_copy(&tG->x, &M[0]->x);
+   if (err == MP_OKAY)
+       err = mp_copy(&tG->y, &M[0]->y);
+   if (err == MP_OKAY)
+       err = mp_copy(&tG->z, &M[0]->z);
+
+   /* M[1] == 2G */
+   if (err == MP_OKAY)
+       err = ecc_projective_dbl_point(tG, M[1], modulus, &mp);
+
+   /* setup sliding window */
+   mode   = 0;
+   bitcnt = 1;
+   buf    = 0;
+   digidx = get_digit_count(k) - 1;
+   bitcpy = bitbuf = 0;
+   first  = 1;
+
+   /* perform ops */
+   if (err == MP_OKAY) {
+       for (;;) {
+           /* grab next digit as required */
+           if (--bitcnt == 0) {
+               if (digidx == -1) {
+                   break;
+               }
+               buf = get_digit(k, digidx);
+               bitcnt = (int) DIGIT_BIT;
+               --digidx;
+           }
+
+           /* grab the next msb from the ltiplicand */
+           i = (buf >> (DIGIT_BIT - 1)) & 1;
+           buf <<= 1;
+
+           if (mode == 0 && i == 0) {
+               /* dummy operations */
+               if (err == MP_OKAY)
+                   err = ecc_projective_add_point(M[0], M[1], M[2], modulus,
+                                                  &mp);
+               if (err == MP_OKAY)
+                   err = ecc_projective_dbl_point(M[1], M[2], modulus, &mp);
+               if (err == MP_OKAY)
+                   continue;
+           }
+
+           if (mode == 0 && i == 1) {
+               mode = 1;
+               /* dummy operations */
+               if (err == MP_OKAY)
+                   err = ecc_projective_add_point(M[0], M[1], M[2], modulus,
+                                                  &mp);
+               if (err == MP_OKAY)
+                   err = ecc_projective_dbl_point(M[1], M[2], modulus, &mp);
+               if (err == MP_OKAY)
+                   continue;
+           }
+
+           if (err == MP_OKAY)
+               err = ecc_projective_add_point(M[0], M[1], M[i^1], modulus, &mp);
+           if (err == MP_OKAY)
+               err = ecc_projective_dbl_point(M[i], M[i], modulus, &mp);
+           if (err != MP_OKAY)
+               break;
+       } /* end for */
+   }
+
+   /* copy result out */
+   if (err == MP_OKAY)
+       err = mp_copy(&M[0]->x, &R->x);
+   if (err == MP_OKAY)
+       err = mp_copy(&M[0]->y, &R->y);
+   if (err == MP_OKAY)
+       err = mp_copy(&M[0]->z, &R->z);
+
+   /* map R back from projective space */
+   if (err == MP_OKAY && map)
+      err = ecc_map(R, modulus, &mp);
+
+   /* done */
+   mp_clear(&mu);
+   ecc_del_point(tG);
+   for (i = 0; i < 3; i++) {
+       ecc_del_point(M[i]);
+   }
+   return err;
+}
+
 #endif /* ECC_TIMING_RESISTANT */
 
 
@@ -1298,6 +1476,9 @@ int ecc_make_key(RNG* rng, int keysize, ecc_key* key)
 {
    int x, err;
 
+   if (key == NULL || rng == NULL)
+       return ECC_BAD_ARG_E;
+
    /* find key size */
    for (x = 0; (keysize > ecc_sets[x].size) && (ecc_sets[x].size != 0); x++)
        ;
@@ -1318,11 +1499,21 @@ int ecc_make_key_ex(RNG* rng, ecc_key* key, const ecc_set_type* dp)
    ecc_point*     base;
    mp_int         prime;
    mp_int         order;
+#ifdef CYASSL_SMALL_STACK
+   byte*          buf;
+#else
    byte           buf[ECC_MAXSIZE];
+#endif
    int            keysize;
 
    if (key == NULL || rng == NULL || dp == NULL)
        return ECC_BAD_ARG_E;
+
+#ifdef CYASSL_SMALL_STACK
+   buf = (byte*)XMALLOC(ECC_MAXSIZE, NULL, DYNAMIC_TYPE_TMP_BUFFER);
+   if (buf == NULL)
+       return MEMORY_E;
+#endif
 
    key->idx = -1;
    key->dp  = dp;
@@ -1332,17 +1523,23 @@ int ecc_make_key_ex(RNG* rng, ecc_key* key, const ecc_set_type* dp)
    base = NULL;
 
    /* make up random string */
-   RNG_GenerateBlock(rng, buf, keysize);
-   buf[0] |= 0x0c;
+   err = RNG_GenerateBlock(rng, buf, keysize);
+   if (err == 0)
+       buf[0] |= 0x0c;
 
    /* setup the key variables */
-   if ((err = mp_init_multi(&key->pubkey.x, &key->pubkey.y, &key->pubkey.z,
-                            &key->k, &prime, &order)) != MP_OKAY)
-       return MEMORY_E;
+   if (err == 0) {
+       err = mp_init_multi(&key->pubkey.x, &key->pubkey.y, &key->pubkey.z,
+                            &key->k, &prime, &order);
+       if (err != MP_OKAY)
+           err = MEMORY_E;
+   }
 
-   base = ecc_new_point();
-   if (base == NULL)
-      err = MEMORY_E;
+   if (err == MP_OKAY) {
+       base = ecc_new_point();
+       if (base == NULL)
+           err = MEMORY_E;
+   }
 
    /* read in the specs for this key */
    if (err == MP_OKAY) 
@@ -1380,9 +1577,15 @@ int ecc_make_key_ex(RNG* rng, ecc_key* key, const ecc_set_type* dp)
    ecc_del_point(base);
    mp_clear(&prime);
    mp_clear(&order);
+
 #ifdef ECC_CLEAN_STACK
-   XMEMSET(buff, 0, ECC_MAXSIZE);
+   XMEMSET(buf, 0, ECC_MAXSIZE);
 #endif
+
+#ifdef CYASSL_SMALL_STACK
+   XFREE(buf, NULL, DYNAMIC_TYPE_TMP_BUFFER);
+#endif
+
    return err;
 }
 
@@ -1565,11 +1768,11 @@ static int ecc_mul2add(ecc_point* A, mp_int* kA,
 
 
   /* allocate memory */
-  tA = XMALLOC(ECC_BUFSIZE, NULL, DYNAMIC_TYPE_TMP_BUFFER);
+  tA = (unsigned char*)XMALLOC(ECC_BUFSIZE, NULL, DYNAMIC_TYPE_TMP_BUFFER);
   if (tA == NULL) {
      return GEN_MEM_ERR;
   }
-  tB = XMALLOC(ECC_BUFSIZE, NULL, DYNAMIC_TYPE_TMP_BUFFER);
+  tB = (unsigned char*)XMALLOC(ECC_BUFSIZE, NULL, DYNAMIC_TYPE_TMP_BUFFER);
   if (tB == NULL) {
      XFREE(tA, NULL, DYNAMIC_TYPE_TMP_BUFFER);
      return GEN_MEM_ERR;
@@ -1746,8 +1949,8 @@ static int ecc_mul2add(ecc_point* A, mp_int* kA,
     }
   }
 #ifdef ECC_CLEAN_STACK
-   XMEMSET(tA, 0, ECC_BUF_SIZE);
-   XMEMSET(tB, 0, ECC_BUF_SIZE);
+   XMEMSET(tA, 0, ECC_BUFSIZE);
+   XMEMSET(tB, 0, ECC_BUFSIZE);
 #endif
    XFREE(tA, NULL, DYNAMIC_TYPE_TMP_BUFFER);
    XFREE(tB, NULL, DYNAMIC_TYPE_TMP_BUFFER);
@@ -1951,12 +2154,23 @@ int ecc_verify_hash(const byte* sig, word32 siglen, const byte* hash,
 /* export public ECC key in ANSI X9.63 format */
 int ecc_export_x963(ecc_key* key, byte* out, word32* outLen)
 {
+#ifdef CYASSL_SMALL_STACK
+   byte*  buf;
+#else
    byte   buf[ECC_BUFSIZE];
+#endif
    word32 numlen;
    int    ret = MP_OKAY;
 
+   /* return length needed only */
+   if (key != NULL && out == NULL && outLen != NULL) {
+      numlen = key->dp->size;
+      *outLen = 1 + 2*numlen;
+      return LENGTH_ONLY_E;
+   }
+
    if (key == NULL || out == NULL || outLen == NULL)
-       return ECC_BAD_ARG_E;
+      return ECC_BAD_ARG_E;
 
    if (ecc_is_valid_idx(key->idx) == 0) {
       return ECC_BAD_ARG_E;
@@ -1971,25 +2185,52 @@ int ecc_export_x963(ecc_key* key, byte* out, word32* outLen)
    /* store byte 0x04 */
    out[0] = 0x04;
 
-   /* pad and store x */
-   XMEMSET(buf, 0, sizeof(buf));
-   ret = mp_to_unsigned_bin(&key->pubkey.x,
-                      buf + (numlen - mp_unsigned_bin_size(&key->pubkey.x)));
-   if (ret != MP_OKAY)
-       return ret;
-   XMEMCPY(out+1, buf, numlen);
+#ifdef CYASSL_SMALL_STACK
+   buf = (byte*)XMALLOC(ECC_BUFSIZE, NULL, DYNAMIC_TYPE_TMP_BUFFER);
+   if (buf == NULL)
+      return MEMORY_E;
+#endif
 
-   /* pad and store y */
-   XMEMSET(buf, 0, sizeof(buf));
-   ret = mp_to_unsigned_bin(&key->pubkey.y,
-                      buf + (numlen - mp_unsigned_bin_size(&key->pubkey.y)));
-   if (ret != MP_OKAY)
-       return ret;
-   XMEMCPY(out+1+numlen, buf, numlen);
+   do {
+      /* pad and store x */
+      XMEMSET(buf, 0, ECC_BUFSIZE);
+      ret = mp_to_unsigned_bin(&key->pubkey.x,
+                         buf + (numlen - mp_unsigned_bin_size(&key->pubkey.x)));
+      if (ret != MP_OKAY)
+         break;
+      XMEMCPY(out+1, buf, numlen);
 
-   *outLen = 1 + 2*numlen;
+      /* pad and store y */
+      XMEMSET(buf, 0, ECC_BUFSIZE);
+      ret = mp_to_unsigned_bin(&key->pubkey.y,
+                         buf + (numlen - mp_unsigned_bin_size(&key->pubkey.y)));
+      if (ret != MP_OKAY)
+         break;
+      XMEMCPY(out+1+numlen, buf, numlen);
 
-   return 0;
+      *outLen = 1 + 2*numlen;
+   } while (0);
+
+#ifdef CYASSL_SMALL_STACK
+   XFREE(buf, NULL, DYNAMIC_TYPE_TMP_BUFFER);
+#endif
+
+   return ret;
+}
+
+
+/* export public ECC key in ANSI X9.63 format, extended with
+ * compression option */
+int ecc_export_x963_ex(ecc_key* key, byte* out, word32* outLen, int compressed)
+{
+    if (compressed == 0)
+        return ecc_export_x963(key, out, outLen);
+#ifdef HAVE_COMP_KEY
+    else
+        return ecc_export_x963_compressed(key, out, outLen);
+#endif
+
+    return NOT_COMPILED_IN;
 }
 
 
@@ -1997,6 +2238,7 @@ int ecc_export_x963(ecc_key* key, byte* out, word32* outLen)
 int ecc_import_x963(const byte* in, word32 inLen, ecc_key* key)
 {
    int x, err;
+   int compressed = 0;
    
    if (in == NULL || key == NULL)
        return ECC_BAD_ARG_E;
@@ -2013,24 +2255,25 @@ int ecc_import_x963(const byte* in, word32 inLen, ecc_key* key)
    }
    err = MP_OKAY;
 
-   /* check for 4, 6 or 7 */
-   if (in[0] != 4 && in[0] != 6 && in[0] != 7) {
+   /* check for 4, 2, or 3 */
+   if (in[0] != 0x04 && in[0] != 0x02 && in[0] != 0x03) {
       err = ASN_PARSE_E;
    }
 
-   /* read data */
-   if (err == MP_OKAY) 
-       err = mp_read_unsigned_bin(&key->pubkey.x, (byte*)in+1, (inLen-1)>>1);
-
-   if (err == MP_OKAY) 
-       err = mp_read_unsigned_bin(&key->pubkey.y, (byte*)in+1+((inLen-1)>>1),
-                                  (inLen-1)>>1);
-   
-   if (err == MP_OKAY) 
-       mp_set(&key->pubkey.z, 1);
+   if (in[0] == 0x02 || in[0] == 0x03) {
+#ifdef HAVE_COMP_KEY
+       compressed = 1;
+#else
+       err = NOT_COMPILED_IN;
+#endif
+   }
 
    if (err == MP_OKAY) {
-     /* determine the idx */
+      /* determine the idx */
+
+      if (compressed)
+          inLen = (inLen-1)*2 + 1;  /* used uncompressed len */
+
       for (x = 0; ecc_sets[x].size != 0; x++) {
          if ((unsigned)ecc_sets[x].size >= ((inLen-1)>>1)) {
             break;
@@ -2045,6 +2288,76 @@ int ecc_import_x963(const byte* in, word32 inLen, ecc_key* key)
           key->type = ECC_PUBLICKEY;
       }
    }
+
+   /* read data */
+   if (err == MP_OKAY)
+       err = mp_read_unsigned_bin(&key->pubkey.x, (byte*)in+1, (inLen-1)>>1);
+
+#ifdef HAVE_COMP_KEY
+   if (err == MP_OKAY && compressed == 1) {   /* build y */
+        mp_int t1, t2, prime, a, b;
+
+        if (mp_init_multi(&t1, &t2, &prime, &a, &b, NULL) != MP_OKAY)
+            err = MEMORY_E;
+
+        /* load prime */
+        if (err == MP_OKAY)
+            err = mp_read_radix(&prime, (char *)key->dp->prime, 16);
+
+        /* load a */
+        if (err == MP_OKAY)
+            err = mp_read_radix(&a, (char *)key->dp->Af, 16);
+
+        /* load b */
+        if (err == MP_OKAY)
+            err = mp_read_radix(&b, (char *)key->dp->Bf, 16);
+
+        /* compute x^3 */
+        if (err == MP_OKAY)
+            err = mp_sqr(&key->pubkey.x, &t1);
+
+        if (err == MP_OKAY)
+            err = mp_mulmod(&t1, &key->pubkey.x, &prime, &t1);
+
+        /* compute x^3 + a*x */
+        if (err == MP_OKAY)
+            err = mp_mulmod(&a, &key->pubkey.x, &prime, &t2);
+
+        if (err == MP_OKAY)
+            err = mp_add(&t1, &t2, &t1);
+
+        /* compute x^3 + a*x + b */
+        if (err == MP_OKAY)
+            err = mp_add(&t1, &b, &t1);
+
+        /* compute sqrt(x^3 + a*x + b) */
+        if (err == MP_OKAY)
+            err = mp_sqrtmod_prime(&t1, &prime, &t2);
+
+        /* adjust y */
+        if (err == MP_OKAY) {
+            if ((mp_isodd(&t2) && in[0] == 0x03) ||
+               (!mp_isodd(&t2) && in[0] == 0x02)) {
+                err = mp_mod(&t2, &prime, &key->pubkey.y);
+            }
+            else {
+                err = mp_submod(&prime, &t2, &prime, &key->pubkey.y);
+            }
+        }
+
+        mp_clear(&a);
+        mp_clear(&b);
+        mp_clear(&prime);
+        mp_clear(&t2);
+        mp_clear(&t1);
+   }
+#endif
+
+   if (err == MP_OKAY && compressed == 0)
+       err = mp_read_unsigned_bin(&key->pubkey.y, (byte*)in+1+((inLen-1)>>1),
+                                  (inLen-1)>>1);
+   if (err == MP_OKAY)
+       mp_set(&key->pubkey.z, 1);
 
    if (err != MP_OKAY) {
        mp_clear(&key->pubkey.x);
@@ -2093,6 +2406,116 @@ int ecc_import_private_key(const byte* priv, word32 privSz, const byte* pub,
     key->type = ECC_PRIVATEKEY;
 
     return mp_read_unsigned_bin(&key->k, priv, privSz);
+}
+
+/**
+   Convert ECC R,S to signature
+   r       R component of signature
+   s       S component of signature
+   out     DER-encoded ECDSA signature
+   outlen  [in/out] output buffer size, output signature size
+   return  MP_OKAY on success
+*/
+int ecc_rs_to_sig(const char* r, const char* s, byte* out, word32* outlen)
+{
+    int err;
+    mp_int rtmp;
+    mp_int stmp;
+
+    if (r == NULL || s == NULL || out == NULL || outlen == NULL)
+        return ECC_BAD_ARG_E;
+
+    err = mp_init_multi(&rtmp, &stmp, NULL, NULL, NULL, NULL);
+    if (err != MP_OKAY)
+        return err;
+
+    err = mp_read_radix(&rtmp, r, 16);
+    if (err == MP_OKAY)
+        err = mp_read_radix(&stmp, s, 16);
+
+    /* convert mp_ints to ECDSA sig, initializes rtmp and stmp internally */
+    if (err == MP_OKAY)
+        err = StoreECC_DSA_Sig(out, outlen, &rtmp, &stmp);
+
+    if (err == MP_OKAY) {
+        if (mp_iszero(&rtmp) || mp_iszero(&stmp))
+            err = MP_ZERO_E;
+    }
+
+    mp_clear(&rtmp);
+    mp_clear(&stmp);
+
+    return err;
+}
+
+/**
+   Import raw ECC key
+   key       The destination ecc_key structure
+   qx        x component of base point, as ASCII hex string
+   qy        y component of base point, as ASCII hex string
+   d         private key, as ASCII hex string
+   curveName ECC curve name, from ecc_sets[]
+   return    MP_OKAY on success
+*/
+int ecc_import_raw(ecc_key* key, const char* qx, const char* qy,
+                   const char* d, const char* curveName)
+{
+    int err, x;
+
+    if (key == NULL || qx == NULL || qy == NULL || d == NULL ||
+        curveName == NULL)
+        return ECC_BAD_ARG_E;
+
+    /* init key */
+    if (mp_init_multi(&key->pubkey.x, &key->pubkey.y, &key->pubkey.z, &key->k,
+                      NULL, NULL) != MP_OKAY) {
+        return MEMORY_E;
+    }
+    err = MP_OKAY;
+
+    /* read Qx */
+    if (err == MP_OKAY)
+        err = mp_read_radix(&key->pubkey.x, qx, 16);
+
+    /* read Qy */
+    if (err == MP_OKAY)
+        err = mp_read_radix(&key->pubkey.y, qy, 16);
+
+    if (err == MP_OKAY)
+        mp_set(&key->pubkey.z, 1);
+
+    /* read and set the curve */
+    if (err == MP_OKAY) {
+        for (x = 0; ecc_sets[x].size != 0; x++) {
+            if (XSTRNCMP(ecc_sets[x].name, curveName,
+                         XSTRLEN(curveName)) == 0) {
+                break;
+            }
+        }
+        if (ecc_sets[x].size == 0) {
+            err = ASN_PARSE_E;
+        } else {
+            /* set the curve */
+            key->idx = x;
+            key->dp = &ecc_sets[x];
+            key->type = ECC_PUBLICKEY;
+        }
+    }
+
+    /* import private key */
+    if (err == MP_OKAY) {
+        key->type = ECC_PRIVATEKEY;
+        err = mp_read_radix(&key->k, d, 16);
+    }
+
+    if (err != MP_OKAY) {
+        mp_clear(&key->pubkey.x);
+        mp_clear(&key->pubkey.y);
+        mp_clear(&key->pubkey.z);
+        mp_clear(&key->k);
+    }
+
+    return err;
 }
 
 
@@ -2924,7 +3347,13 @@ static int build_lut(int idx, mp_int* modulus, mp_digit* mp, mp_int* mu)
 static int accel_fp_mul(int idx, mp_int* k, ecc_point *R, mp_int* modulus,
                         mp_digit* mp, int map)
 {
+#define KB_SIZE 128
+
+#ifdef CYASSL_SMALL_STACK
+   unsigned char* kb;
+#else
    unsigned char kb[128];
+#endif
    int      x;
    unsigned y, z, err, bitlen, bitpos, lut_gap, first;
    mp_int   tk;
@@ -2979,70 +3408,87 @@ static int accel_fp_mul(int idx, mp_int* k, ecc_point *R, mp_int* modulus,
    lut_gap = bitlen / FP_LUT;
         
    /* get the k value */
-   if (mp_unsigned_bin_size(&tk) > (int)(sizeof(kb) - 2)) {
+   if (mp_unsigned_bin_size(&tk) > (int)(KB_SIZE - 2)) {
       mp_clear(&tk);
       return BUFFER_E;
    }
    
    /* store k */
-   XMEMSET(kb, 0, sizeof(kb));
+#ifdef CYASSL_SMALL_STACK
+   kb = (unsigned char*)XMALLOC(KB_SIZE, NULL, DYNAMIC_TYPE_TMP_BUFFER);
+   if (kb == NULL)
+      return MEMORY_E;
+#endif
+
+   XMEMSET(kb, 0, KB_SIZE);
    if ((err = mp_to_unsigned_bin(&tk, kb)) != MP_OKAY) {
       mp_clear(&tk);
-      return err;
    }
-   
-   /* let's reverse kb so it's little endian */
-   x = 0;
-   y = mp_unsigned_bin_size(&tk) - 1;
-   mp_clear(&tk);
+   else {
+      /* let's reverse kb so it's little endian */
+      x = 0;
+      y = mp_unsigned_bin_size(&tk) - 1;
+      mp_clear(&tk);
 
-   while ((unsigned)x < y) {
-      z = kb[x]; kb[x] = kb[y]; kb[y] = z;
-      ++x; --y;
-   }      
-   
-   /* at this point we can start, yipee */
-   first = 1;
-   for (x = lut_gap-1; x >= 0; x--) {
-       /* extract FP_LUT bits from kb spread out by lut_gap bits and offset
-          by x bits from the start */
-       bitpos = x;
-       for (y = z = 0; y < FP_LUT; y++) {
-          z |= ((kb[bitpos>>3] >> (bitpos&7)) & 1) << y;
-          bitpos += lut_gap;  /* it's y*lut_gap + x, but here we can avoid
-                                 the mult in each loop */
-       }
-              
-       /* double if not first */
-       if (!first) {
-          if ((err = ecc_projective_dbl_point(R, R, modulus, mp)) != MP_OKAY) {
-             return err;
+      while ((unsigned)x < y) {
+         z = kb[x]; kb[x] = kb[y]; kb[y] = z;
+         ++x; --y;
+      }
+
+      /* at this point we can start, yipee */
+      first = 1;
+      for (x = lut_gap-1; x >= 0; x--) {
+          /* extract FP_LUT bits from kb spread out by lut_gap bits and offset
+             by x bits from the start */
+          bitpos = x;
+          for (y = z = 0; y < FP_LUT; y++) {
+             z |= ((kb[bitpos>>3] >> (bitpos&7)) & 1) << y;
+             bitpos += lut_gap;  /* it's y*lut_gap + x, but here we can avoid
+                                    the mult in each loop */
           }
-       }
-       
-       /* add if not first, otherwise copy */          
-       if (!first && z) {
-          if ((err = ecc_projective_add_point(R, fp_cache[idx].LUT[z], R,
-                                              modulus, mp)) != MP_OKAY) {
-             return err;
+
+          /* double if not first */
+          if (!first) {
+             if ((err = ecc_projective_dbl_point(R, R, modulus,
+                                                              mp)) != MP_OKAY) {
+                break;
+             }
           }
-       } else if (z) {
-          if ((mp_copy(&fp_cache[idx].LUT[z]->x, &R->x) != MP_OKAY) || 
-              (mp_copy(&fp_cache[idx].LUT[z]->y, &R->y) != MP_OKAY) || 
-              (mp_copy(&fp_cache[idx].mu,        &R->z) != MP_OKAY)) {
-              return GEN_MEM_ERR;
+
+          /* add if not first, otherwise copy */
+          if (!first && z) {
+             if ((err = ecc_projective_add_point(R, fp_cache[idx].LUT[z], R,
+                                                     modulus, mp)) != MP_OKAY) {
+                break;
+             }
+          } else if (z) {
+             if ((mp_copy(&fp_cache[idx].LUT[z]->x, &R->x) != MP_OKAY) ||
+                 (mp_copy(&fp_cache[idx].LUT[z]->y, &R->y) != MP_OKAY) ||
+                 (mp_copy(&fp_cache[idx].mu,        &R->z) != MP_OKAY)) {
+                 err = GEN_MEM_ERR;
+                 break;
+             }
+                 first = 0;
           }
-              first = 0;              
-       }
-   }     
-   z = 0;
-   XMEMSET(kb, 0, sizeof(kb));
-   /* map R back from projective space */
-   if (map) {
-      err = ecc_map(R, modulus, mp);
-   } else {
-      err = MP_OKAY;
+      }
    }
+
+   if (err == MP_OKAY) {
+      z = 0;
+      XMEMSET(kb, 0, KB_SIZE);
+      /* map R back from projective space */
+      if (map) {
+         err = ecc_map(R, modulus, mp);
+      } else {
+         err = MP_OKAY;
+      }
+   }
+
+#ifdef CYASSL_SMALL_STACK
+   XFREE(kb, NULL, DYNAMIC_TYPE_TMP_BUFFER);
+#endif
+
+#undef KB_SIZE
 
    return err;
 }
@@ -3053,7 +3499,13 @@ static int accel_fp_mul2add(int idx1, int idx2,
                             mp_int* kA, mp_int* kB,
                             ecc_point *R, mp_int* modulus, mp_digit* mp)
 {
+#define KB_SIZE 128
+
+#ifdef CYASSL_SMALL_STACK
+   unsigned char* kb[2];
+#else
    unsigned char kb[2][128];
+#endif
    int      x;
    unsigned y, z, err, bitlen, bitpos, lut_gap, first, zA, zB;
    mp_int tka;
@@ -3150,18 +3602,25 @@ static int accel_fp_mul2add(int idx1, int idx2,
    lut_gap = bitlen / FP_LUT;
         
    /* get the k value */
-   if ((mp_unsigned_bin_size(&tka) > (int)(sizeof(kb[0]) - 2)) ||
-       (mp_unsigned_bin_size(&tkb) > (int)(sizeof(kb[0]) - 2))  ) {
+   if ((mp_unsigned_bin_size(&tka) > (int)(KB_SIZE - 2)) ||
+       (mp_unsigned_bin_size(&tkb) > (int)(KB_SIZE - 2))  ) {
       mp_clear(&tka);
       mp_clear(&tkb);
       return BUFFER_E;
    }
    
    /* store k */
-   XMEMSET(kb, 0, sizeof(kb));
+#ifdef CYASSL_SMALL_STACK
+   kb[0] = (unsigned char*)XMALLOC(KB_SIZE, NULL, DYNAMIC_TYPE_TMP_BUFFER);
+   if (kb[0] == NULL)
+      return MEMORY_E;
+#endif
+
+   XMEMSET(kb[0], 0, KB_SIZE);
    if ((err = mp_to_unsigned_bin(&tka, kb[0])) != MP_OKAY) {
       mp_clear(&tka);
       mp_clear(&tkb);
+      XFREE(kb[0], NULL, DYNAMIC_TYPE_TMP_BUFFER);
       return err;
    }
    
@@ -3175,80 +3634,101 @@ static int accel_fp_mul2add(int idx1, int idx2,
    }      
    
    /* store b */
+#ifdef CYASSL_SMALL_STACK
+   kb[1] = (unsigned char*)XMALLOC(KB_SIZE, NULL, DYNAMIC_TYPE_TMP_BUFFER);
+   if (kb[1] == NULL) {
+      XFREE(kb[0], NULL, DYNAMIC_TYPE_TMP_BUFFER);
+      return MEMORY_E;
+   }
+#endif
+
+   XMEMSET(kb[1], 0, KB_SIZE);
    if ((err = mp_to_unsigned_bin(&tkb, kb[1])) != MP_OKAY) {
       mp_clear(&tkb);
-      return err;
    }
+   else {
+      x = 0;
+      y = mp_unsigned_bin_size(&tkb) - 1;
+      mp_clear(&tkb);
+      while ((unsigned)x < y) {
+         z = kb[1][x]; kb[1][x] = kb[1][y]; kb[1][y] = z;
+         ++x; --y;
+      }
 
-   x = 0;
-   y = mp_unsigned_bin_size(&tkb) - 1;
-   mp_clear(&tkb);
-   while ((unsigned)x < y) {
-      z = kb[1][x]; kb[1][x] = kb[1][y]; kb[1][y] = z;
-      ++x; --y;
-   }      
-
-   /* at this point we can start, yipee */
-   first = 1;
-   for (x = lut_gap-1; x >= 0; x--) {
-       /* extract FP_LUT bits from kb spread out by lut_gap bits and
-          offset by x bits from the start */
-       bitpos = x;
-       for (y = zA = zB = 0; y < FP_LUT; y++) {
-          zA |= ((kb[0][bitpos>>3] >> (bitpos&7)) & 1) << y;
-          zB |= ((kb[1][bitpos>>3] >> (bitpos&7)) & 1) << y;
-          bitpos += lut_gap;    /* it's y*lut_gap + x, but here we can avoid
-                                   the mult in each loop */
-       }
-              
-       /* double if not first */
-       if (!first) {
-          if ((err = ecc_projective_dbl_point(R, R, modulus, mp)) != MP_OKAY) {
-             return err;
+      /* at this point we can start, yipee */
+      first = 1;
+      for (x = lut_gap-1; x >= 0; x--) {
+          /* extract FP_LUT bits from kb spread out by lut_gap bits and
+             offset by x bits from the start */
+          bitpos = x;
+          for (y = zA = zB = 0; y < FP_LUT; y++) {
+             zA |= ((kb[0][bitpos>>3] >> (bitpos&7)) & 1) << y;
+             zB |= ((kb[1][bitpos>>3] >> (bitpos&7)) & 1) << y;
+             bitpos += lut_gap;    /* it's y*lut_gap + x, but here we can avoid
+                                      the mult in each loop */
           }
-       }
-       
-       /* add if not first, otherwise copy */          
-       if (!first) {
-          if (zA) {
-             if ((err = ecc_projective_add_point(R, fp_cache[idx1].LUT[zA],
-                                                 R, modulus, mp)) != MP_OKAY) {
-                return err;
+
+          /* double if not first */
+          if (!first) {
+             if ((err = ecc_projective_dbl_point(R, R, modulus,
+                                                              mp)) != MP_OKAY) {
+                break;
              }
           }
-          if (zB) {
-             if ((err = ecc_projective_add_point(R, fp_cache[idx2].LUT[zB],
-                                                 R, modulus, mp)) != MP_OKAY) {
-                return err;
-             }
-          }
-       } else {
-          if (zA) {
-              if ((mp_copy(&fp_cache[idx1].LUT[zA]->x, &R->x) != MP_OKAY) || 
-                 (mp_copy(&fp_cache[idx1].LUT[zA]->y, &R->y) != MP_OKAY) || 
-                 (mp_copy(&fp_cache[idx1].mu,        &R->z) != MP_OKAY)) {
-                  return GEN_MEM_ERR;
-              }
-                 first = 0;              
-          }
-          if (zB && first == 0) {
-             if (zB) {
-                if ((err = ecc_projective_add_point(R, fp_cache[idx2].LUT[zB],
-                                                   R, modulus, mp)) != MP_OKAY){
-                   return err;
+
+          /* add if not first, otherwise copy */
+          if (!first) {
+             if (zA) {
+                if ((err = ecc_projective_add_point(R, fp_cache[idx1].LUT[zA],
+                                                  R, modulus, mp)) != MP_OKAY) {
+                   break;
                 }
              }
-          } else if (zB && first == 1) {
-              if ((mp_copy(&fp_cache[idx2].LUT[zB]->x, &R->x) != MP_OKAY) || 
-                 (mp_copy(&fp_cache[idx2].LUT[zB]->y, &R->y) != MP_OKAY) || 
-                 (mp_copy(&fp_cache[idx2].mu,        &R->z) != MP_OKAY)) {
-                  return GEN_MEM_ERR;
-              }
-                 first = 0;              
+             if (zB) {
+                if ((err = ecc_projective_add_point(R, fp_cache[idx2].LUT[zB],
+                                                  R, modulus, mp)) != MP_OKAY) {
+                   break;
+                }
+             }
+          } else {
+             if (zA) {
+                 if ((mp_copy(&fp_cache[idx1].LUT[zA]->x, &R->x) != MP_OKAY) ||
+                    (mp_copy(&fp_cache[idx1].LUT[zA]->y,  &R->y) != MP_OKAY) ||
+                    (mp_copy(&fp_cache[idx1].mu,          &R->z) != MP_OKAY)) {
+                     err = GEN_MEM_ERR;
+                     break;
+                 }
+                    first = 0;
+             }
+             if (zB && first == 0) {
+                if (zB) {
+                   if ((err = ecc_projective_add_point(R,
+                           fp_cache[idx2].LUT[zB], R, modulus, mp)) != MP_OKAY){
+                      break;
+                   }
+                }
+             } else if (zB && first == 1) {
+                 if ((mp_copy(&fp_cache[idx2].LUT[zB]->x, &R->x) != MP_OKAY) ||
+                    (mp_copy(&fp_cache[idx2].LUT[zB]->y, &R->y) != MP_OKAY) ||
+                    (mp_copy(&fp_cache[idx2].mu,        &R->z) != MP_OKAY)) {
+                     err = GEN_MEM_ERR;
+                     break;
+                 }
+                    first = 0;
+             }
           }
-       }
-   }     
-   XMEMSET(kb, 0, sizeof(kb));
+      }
+   }
+
+   XMEMSET(kb[0], 0, KB_SIZE);
+   XMEMSET(kb[1], 0, KB_SIZE);
+
+#ifdef CYASSL_SMALL_STACK
+   XFREE(kb[0], NULL, DYNAMIC_TYPE_TMP_BUFFER);
+   XFREE(kb[1], NULL, DYNAMIC_TYPE_TMP_BUFFER);
+#endif
+
+#undef KB_SIZE
 
    return ecc_map(R, modulus, mp);
 }
@@ -3530,9 +4010,9 @@ enum ecSrvState {
 
 
 struct ecEncCtx {
-    byte*     kdfSalt;     /* optional salt for kdf */
-    byte*     kdfInfo;     /* optional info for kdf */
-    byte*     macSalt;     /* optional salt for mac */
+    const byte* kdfSalt;   /* optional salt for kdf */
+    const byte* kdfInfo;   /* optional info for kdf */
+    const byte* macSalt;   /* optional salt for mac */
     word32    kdfSaltSz;   /* size of kdfSalt */
     word32    kdfInfoSz;   /* size of kdfInfo */
     word32    macSaltSz;   /* size of macSalt */
@@ -3577,6 +4057,19 @@ const byte* ecc_ctx_get_own_salt(ecEncCtx* ctx)
 }
 
 
+/* optional set info, can be called before or after set_peer_salt */
+int ecc_ctx_set_info(ecEncCtx* ctx, const byte* info, int sz)
+{
+    if (ctx == NULL || info == 0 || sz < 0)
+        return BAD_FUNC_ARG;
+
+    ctx->kdfInfo   = info;
+    ctx->kdfInfoSz = sz;
+
+    return 0;
+}
+
+
 static const char* exchange_info = "Secure Message Exchange";
 
 int ecc_ctx_set_peer_salt(ecEncCtx* ctx, const byte* salt)
@@ -3618,8 +4111,11 @@ int ecc_ctx_set_peer_salt(ecEncCtx* ctx, const byte* salt)
     ctx->macSalt   = ctx->serverSalt;
     ctx->macSaltSz = EXCHANGE_SALT_SZ;
 
-    ctx->kdfInfo   = (byte*)exchange_info;
-    ctx->kdfInfoSz = EXCHANGE_INFO_SZ;
+    if (ctx->kdfInfo == NULL) {
+        /* default info */
+        ctx->kdfInfo   = (const byte*)exchange_info;
+        ctx->kdfInfoSz = EXCHANGE_INFO_SZ;
+    }
 
     return 0;
 }
@@ -3633,9 +4129,8 @@ static int ecc_ctx_set_salt(ecEncCtx* ctx, int flags, RNG* rng)
         return BAD_FUNC_ARG;
 
     saltBuffer = (flags == REQ_RESP_CLIENT) ? ctx->clientSalt : ctx->serverSalt;
-    RNG_GenerateBlock(rng, saltBuffer, EXCHANGE_SALT_SZ);
 
-    return 0;
+    return RNG_GenerateBlock(rng, saltBuffer, EXCHANGE_SALT_SZ);
 }
 
 
@@ -3657,17 +4152,27 @@ static void ecc_ctx_init(ecEncCtx* ctx, int flags)
 }
 
 
+/* allow ecc context reset so user doesn't have to init/free for resue */
+int ecc_ctx_reset(ecEncCtx* ctx, RNG* rng)
+{
+    if (ctx == NULL || rng == NULL)
+        return BAD_FUNC_ARG;
+
+    ecc_ctx_init(ctx, ctx->protocol);
+    return ecc_ctx_set_salt(ctx, ctx->protocol, rng);
+}
+
+
 /* alloc/init and set defaults, return new Context  */
 ecEncCtx* ecc_ctx_new(int flags, RNG* rng)
 {
     int       ret = 0;
     ecEncCtx* ctx = (ecEncCtx*)XMALLOC(sizeof(ecEncCtx), 0, DYNAMIC_TYPE_ECC);
 
-    ecc_ctx_init(ctx, flags);
+    if (ctx)
+        ctx->protocol = (byte)flags;
 
-    if (ctx && flags)
-        ret = ecc_ctx_set_salt(ctx, flags, rng);
-
+    ret = ecc_ctx_reset(ctx, rng);
     if (ret != 0) {
         ecc_ctx_free(ctx);
         ctx = NULL;
@@ -3728,9 +4233,14 @@ int ecc_encrypt(ecc_key* privKey, ecc_key* pubKey, const byte* msg,
     word32       blockSz;
     word32       digestSz;
     ecEncCtx     localCtx;
+#ifdef CYASSL_SMALL_STACK
+    byte*        sharedSecret;
+    byte*        keys;
+#else
     byte         sharedSecret[ECC_MAXSIZE];  /* 521 max size */
     byte         keys[ECC_BUFSIZE];         /* max size */
-    word32       sharedSz = sizeof(sharedSecret);
+#endif
+    word32       sharedSz = ECC_MAXSIZE;
     int          keysLen;
     int          encKeySz;
     int          ivSz;
@@ -3769,7 +4279,7 @@ int ecc_encrypt(ecc_key* privKey, ecc_key* pubKey, const byte* msg,
         ctx->cliSt = ecCLI_SENT_REQ; /* only do this once */
     }
         
-    if (keysLen > (int)sizeof(keys))
+    if (keysLen > ECC_BUFSIZE) /* keys size */
         return BUFFER_E;
         
     if ( (msgSz%blockSz) != 0)
@@ -3778,64 +4288,90 @@ int ecc_encrypt(ecc_key* privKey, ecc_key* pubKey, const byte* msg,
     if (*outSz < (msgSz + digestSz))
         return BUFFER_E;
 
-    ret = ecc_shared_secret(privKey, pubKey, sharedSecret, &sharedSz); 
-    if (ret != 0)
-        return ret;
+#ifdef CYASSL_SMALL_STACK
+    sharedSecret = (byte*)XMALLOC(ECC_MAXSIZE, NULL, DYNAMIC_TYPE_TMP_BUFFER);
+    if (sharedSecret == NULL)
+        return MEMORY_E;
 
-    switch (ctx->kdfAlgo) {
-        case ecHKDF_SHA256 :
-                ret = HKDF(SHA256, sharedSecret, sharedSz, ctx->kdfSalt,
-                           ctx->kdfSaltSz, ctx->kdfInfo,
-                           ctx->kdfInfoSz, keys, keysLen);
-                if (ret != 0)
-                    return ret;
-            break;
+    keys = (byte*)XMALLOC(ECC_BUFSIZE, NULL, DYNAMIC_TYPE_TMP_BUFFER);
+    if (keys == NULL) {
+        XFREE(sharedSecret, NULL, DYNAMIC_TYPE_TMP_BUFFER);
+        return MEMORY_E;
+    }
+#endif
 
-        default:
-            return BAD_FUNC_ARG;
+    ret = ecc_shared_secret(privKey, pubKey, sharedSecret, &sharedSz);
+
+    if (ret == 0) {
+       switch (ctx->kdfAlgo) {
+           case ecHKDF_SHA256 :
+               ret = HKDF(SHA256, sharedSecret, sharedSz, ctx->kdfSalt,
+                          ctx->kdfSaltSz, ctx->kdfInfo, ctx->kdfInfoSz,
+                          keys, keysLen);
+               break;
+
+           default:
+               ret = BAD_FUNC_ARG;
+               break;
+       }
     }
 
-    encKey = keys + offset;
-    encIv  = encKey + encKeySz;
-    macKey = encKey + encKeySz + ivSz;
+    if (ret == 0) {
+       encKey = keys + offset;
+       encIv  = encKey + encKeySz;
+       macKey = encKey + encKeySz + ivSz;
 
-    switch (ctx->encAlgo) {
-        case ecAES_128_CBC:
-            {
-                Aes aes;
-                ret = AesSetKey(&aes, encKey,KEY_SIZE_128,encIv,AES_ENCRYPTION);
-                if (ret != 0)
-                    return ret;
-                ret = AesCbcEncrypt(&aes, out, msg, msgSz);
-                if (ret != 0)
-                    return ret;
-            }
-            break;
+       switch (ctx->encAlgo) {
+           case ecAES_128_CBC:
+               {
+                   Aes aes;
+                   ret = AesSetKey(&aes, encKey, KEY_SIZE_128, encIv,
+                                                                AES_ENCRYPTION);
+                   if (ret != 0)
+                       break;
+                   ret = AesCbcEncrypt(&aes, out, msg, msgSz);
+               }
+               break;
 
-        default:
-            return BAD_FUNC_ARG;
+           default:
+               ret = BAD_FUNC_ARG;
+               break;
+       }
     }
 
-    switch (ctx->macAlgo) {
-        case ecHMAC_SHA256:
-            {
-                Hmac hmac;
-                ret = HmacSetKey(&hmac, SHA256, macKey, SHA256_DIGEST_SIZE);
-                if (ret != 0)
-                    return ret;
-                HmacUpdate(&hmac, out, msgSz);
-                HmacUpdate(&hmac, ctx->macSalt, ctx->macSaltSz);
-                HmacFinal(&hmac, out+msgSz);
-            }
-            break;
+    if (ret == 0) {
+       switch (ctx->macAlgo) {
+           case ecHMAC_SHA256:
+               {
+                   Hmac hmac;
+                   ret = HmacSetKey(&hmac, SHA256, macKey, SHA256_DIGEST_SIZE);
+                   if (ret != 0)
+                       break;
+                   ret = HmacUpdate(&hmac, out, msgSz);
+                   if (ret != 0)
+                       break;
+                   ret = HmacUpdate(&hmac, ctx->macSalt, ctx->macSaltSz);
+                   if (ret != 0)
+                       break;
+                   ret = HmacFinal(&hmac, out+msgSz);
+               }
+               break;
 
-        default:
-            return BAD_FUNC_ARG;
+           default:
+               ret = BAD_FUNC_ARG;
+               break;
+       }
     }
 
-    *outSz = msgSz + digestSz;
+    if (ret == 0)
+       *outSz = msgSz + digestSz;
 
-    return 0;
+#ifdef CYASSL_SMALL_STACK
+    XFREE(sharedSecret, NULL, DYNAMIC_TYPE_TMP_BUFFER);
+    XFREE(keys, NULL, DYNAMIC_TYPE_TMP_BUFFER);
+#endif
+
+    return ret;
 }
 
 
@@ -3849,9 +4385,14 @@ int ecc_decrypt(ecc_key* privKey, ecc_key* pubKey, const byte* msg,
     word32       blockSz;
     word32       digestSz;
     ecEncCtx     localCtx;
+#ifdef CYASSL_SMALL_STACK
+    byte*        sharedSecret;
+    byte*        keys;
+#else
     byte         sharedSecret[ECC_MAXSIZE];  /* 521 max size */
     byte         keys[ECC_BUFSIZE];         /* max size */
-    word32       sharedSz = sizeof(sharedSecret);
+#endif
+    word32       sharedSz = ECC_MAXSIZE;
     int          keysLen;
     int          encKeySz;
     int          ivSz;
@@ -3890,7 +4431,7 @@ int ecc_decrypt(ecc_key* privKey, ecc_key* pubKey, const byte* msg,
         ctx->srvSt = ecSRV_RECV_REQ; /* only do this once */
     }
         
-    if (keysLen > (int)sizeof(keys))
+    if (keysLen > ECC_BUFSIZE) /* keys size */
         return BUFFER_E;
         
     if ( ((msgSz-digestSz) % blockSz) != 0)
@@ -3899,72 +4440,398 @@ int ecc_decrypt(ecc_key* privKey, ecc_key* pubKey, const byte* msg,
     if (*outSz < (msgSz - digestSz))
         return BUFFER_E;
 
-    ret = ecc_shared_secret(privKey, pubKey, sharedSecret, &sharedSz); 
-    if (ret != 0)
-        return ret;
+#ifdef CYASSL_SMALL_STACK
+    sharedSecret = (byte*)XMALLOC(ECC_MAXSIZE, NULL, DYNAMIC_TYPE_TMP_BUFFER);
+    if (sharedSecret == NULL)
+        return MEMORY_E;
 
-    switch (ctx->kdfAlgo) {
-        case ecHKDF_SHA256 :
-                ret = HKDF(SHA256, sharedSecret, sharedSz, ctx->kdfSalt,
-                           ctx->kdfSaltSz, ctx->kdfInfo,
-                           ctx->kdfInfoSz, keys, keysLen);
-                if (ret != 0)
-                    return ret;
-            break;
+    keys = (byte*)XMALLOC(ECC_BUFSIZE, NULL, DYNAMIC_TYPE_TMP_BUFFER);
+    if (keys == NULL) {
+        XFREE(sharedSecret, NULL, DYNAMIC_TYPE_TMP_BUFFER);
+        return MEMORY_E;
+    }
+#endif
 
-        default:
-            return BAD_FUNC_ARG;
+    ret = ecc_shared_secret(privKey, pubKey, sharedSecret, &sharedSz);
+
+    if (ret == 0) {
+       switch (ctx->kdfAlgo) {
+           case ecHKDF_SHA256 :
+               ret = HKDF(SHA256, sharedSecret, sharedSz, ctx->kdfSalt,
+                          ctx->kdfSaltSz, ctx->kdfInfo, ctx->kdfInfoSz,
+                          keys, keysLen);
+               break;
+
+           default:
+               ret = BAD_FUNC_ARG;
+               break;
+       }
     }
 
-    encKey = keys + offset;
-    encIv  = encKey + encKeySz;
-    macKey = encKey + encKeySz + ivSz;
+    if (ret == 0) {
+       encKey = keys + offset;
+       encIv  = encKey + encKeySz;
+       macKey = encKey + encKeySz + ivSz;
 
-    switch (ctx->macAlgo) {
-        case ecHMAC_SHA256:
-            {
-                byte verify[SHA256_DIGEST_SIZE];
-                Hmac hmac;
-                ret = HmacSetKey(&hmac, SHA256, macKey, SHA256_DIGEST_SIZE);
-                if (ret != 0)
-                    return ret;
-                HmacUpdate(&hmac, msg, msgSz-digestSz);
-                HmacUpdate(&hmac, ctx->macSalt, ctx->macSaltSz);
-                HmacFinal(&hmac, verify);
+       switch (ctx->macAlgo) {
+           case ecHMAC_SHA256:
+               {
+                   byte verify[SHA256_DIGEST_SIZE];
+                   Hmac hmac;
+                   ret = HmacSetKey(&hmac, SHA256, macKey, SHA256_DIGEST_SIZE);
+                   if (ret != 0)
+                       break;
+                   ret = HmacUpdate(&hmac, msg, msgSz-digestSz);
+                   if (ret != 0)
+                       break;
+                   ret = HmacUpdate(&hmac, ctx->macSalt, ctx->macSaltSz);
+                   if (ret != 0)
+                       break;
+                   ret = HmacFinal(&hmac, verify);
+                   if (ret != 0)
+                       break;
+                   if (memcmp(verify, msg + msgSz - digestSz, digestSz) != 0)
+                       ret = -1;
+               }
+               break;
 
-                if (memcmp(verify, msg + msgSz - digestSz, digestSz) != 0) {
-                    return -1;
-                }
-            }
-            break;
-
-        default:
-            return BAD_FUNC_ARG;
+           default:
+               ret = BAD_FUNC_ARG;
+               break;
+       }
     }
 
-    switch (ctx->encAlgo) {
-        case ecAES_128_CBC:
-            {
-                Aes aes;
-                ret = AesSetKey(&aes, encKey,KEY_SIZE_128,encIv,AES_DECRYPTION);
-                if (ret != 0)
-                    return ret;
-                ret = AesCbcDecrypt(&aes, out, msg, msgSz-digestSz);
-                if (ret != 0)
-                    return ret;
-            }
-            break;
+    if (ret == 0) {
+       switch (ctx->encAlgo) {
+           case ecAES_128_CBC:
+               {
+                   Aes aes;
+                   ret = AesSetKey(&aes, encKey, KEY_SIZE_128, encIv,
+                                                                AES_DECRYPTION);
+                   if (ret != 0)
+                       break;
+                   ret = AesCbcDecrypt(&aes, out, msg, msgSz-digestSz);
+               }
+               break;
 
-        default:
-            return BAD_FUNC_ARG;
+           default:
+               ret = BAD_FUNC_ARG;
+               break;
+       }
     }
 
-    *outSz = msgSz - digestSz;
+    if (ret == 0)
+       *outSz = msgSz - digestSz;
 
-    return 0;
+#ifdef CYASSL_SMALL_STACK
+    XFREE(sharedSecret, NULL, DYNAMIC_TYPE_TMP_BUFFER);
+    XFREE(keys, NULL, DYNAMIC_TYPE_TMP_BUFFER);
+#endif
+
+    return ret;
 }
 
 
 #endif /* HAVE_ECC_ENCRYPT */
+
+
+#ifdef HAVE_COMP_KEY
+
+/* computes the jacobi c = (a | n) (or Legendre if n is prime)
+ * HAC pp. 73 Algorithm 2.149
+ */
+int mp_jacobi(mp_int* a, mp_int* p, int* c)
+{
+  mp_int   a1, p1;
+  int      k, s, r, res;
+  mp_digit residue;
+
+  /* if p <= 0 return MP_VAL */
+  if (mp_cmp_d(p, 0) != MP_GT) {
+     return MP_VAL;
+  }
+
+  /* step 1.  if a == 0, return 0 */
+  if (mp_iszero (a) == 1) {
+    *c = 0;
+    return MP_OKAY;
+  }
+
+  /* step 2.  if a == 1, return 1 */
+  if (mp_cmp_d (a, 1) == MP_EQ) {
+    *c = 1;
+    return MP_OKAY;
+  }
+
+  /* default */
+  s = 0;
+
+  /* step 3.  write a = a1 * 2**k  */
+  if ((res = mp_init_copy (&a1, a)) != MP_OKAY) {
+    return res;
+  }
+
+  if ((res = mp_init (&p1)) != MP_OKAY) {
+    mp_clear(&a1);
+    return res;
+  }
+
+  /* divide out larger power of two */
+  k = mp_cnt_lsb(&a1);
+  res = mp_div_2d(&a1, k, &a1, NULL);
+
+  if (res == MP_OKAY) {
+    /* step 4.  if e is even set s=1 */
+    if ((k & 1) == 0) {
+      s = 1;
+    } else {
+      /* else set s=1 if p = 1/7 (mod 8) or s=-1 if p = 3/5 (mod 8) */
+      residue = p->dp[0] & 7;
+
+      if (residue == 1 || residue == 7) {
+        s = 1;
+      } else if (residue == 3 || residue == 5) {
+        s = -1;
+      }
+    }
+
+    /* step 5.  if p == 3 (mod 4) *and* a1 == 3 (mod 4) then s = -s */
+    if ( ((p->dp[0] & 3) == 3) && ((a1.dp[0] & 3) == 3)) {
+      s = -s;
+    }
+  }
+
+  if (res == MP_OKAY) {
+    /* if a1 == 1 we're done */
+    if (mp_cmp_d (&a1, 1) == MP_EQ) {
+      *c = s;
+    } else {
+      /* n1 = n mod a1 */
+      res = mp_mod (p, &a1, &p1);
+      if (res == MP_OKAY)
+        res = mp_jacobi (&p1, &a1, &r);
+
+      if (res == MP_OKAY)
+      *c = s * r;
+    }
+  }
+
+  /* done */
+  mp_clear (&p1);
+  mp_clear (&a1);
+
+  return res;
+}
+
+
+int mp_sqrtmod_prime(mp_int* n, mp_int* prime, mp_int* ret)
+{
+  int res, legendre, done = 0;
+  mp_int t1, C, Q, S, Z, M, T, R, two;
+  mp_digit i;
+
+  /* first handle the simple cases */
+  if (mp_cmp_d(n, 0) == MP_EQ) {
+    mp_zero(ret);
+    return MP_OKAY;
+  }
+  if (mp_cmp_d(prime, 2) == MP_EQ)       return MP_VAL; /* prime must be odd */
+  /* TAO removed
+  if ((res = mp_jacobi(n, prime, &legendre)) != MP_OKAY)      return res;
+  if (legendre == -1)  return MP_VAL; */ /* quadratic non-residue mod prime */
+
+  if ((res = mp_init_multi(&t1, &C, &Q, &S, &Z, &M)) != MP_OKAY)
+    return res;
+
+  if ((res = mp_init_multi(&T, &R, &two, NULL, NULL, NULL))
+                          != MP_OKAY) {
+    mp_clear(&t1); mp_clear(&C); mp_clear(&Q); mp_clear(&S); mp_clear(&Z);
+    mp_clear(&M);
+    return res;
+  }
+
+  /* SPECIAL CASE: if prime mod 4 == 3
+   * compute directly: res = n^(prime+1)/4 mod prime
+   * Handbook of Applied Cryptography algorithm 3.36
+   */
+  res = mp_mod_d(prime, 4, &i);
+  if (res == MP_OKAY && i == 3) {
+    res = mp_add_d(prime, 1, &t1);
+
+    if (res == MP_OKAY)
+      res = mp_div_2(&t1, &t1);
+    if (res == MP_OKAY)
+      res = mp_div_2(&t1, &t1);
+    if (res == MP_OKAY)
+      res = mp_exptmod(n, &t1, prime, ret);
+
+    done = 1;
+  }
+
+  /* NOW: TonelliShanks algorithm */
+
+ if (res == MP_OKAY && done == 0) {
+
+   /* factor out powers of 2 from prime-1, defining Q and S
+    *                                      as: prime-1 = Q*2^S */
+    res = mp_copy(prime, &Q);
+    if (res == MP_OKAY)
+      res = mp_sub_d(&Q, 1, &Q);
+    /* Q = prime - 1 */
+    if (res == MP_OKAY)
+      mp_zero(&S);
+    /* S = 0 */
+    while (res == MP_OKAY && mp_iseven(&Q)) {
+      res = mp_div_2(&Q, &Q);
+      /* Q = Q / 2 */
+      if (res == MP_OKAY)
+        res = mp_add_d(&S, 1, &S);
+        /* S = S + 1 */
+    }
+
+    /* find a Z such that the Legendre symbol (Z|prime) == -1 */
+    if (res == MP_OKAY)
+      res = mp_set_int(&Z, 2);
+    /* Z = 2 */
+    while (res == MP_OKAY) {
+      res = mp_jacobi(&Z, prime, &legendre);
+      if (res == MP_OKAY && legendre == -1)
+        break;
+      if (res == MP_OKAY)
+        res = mp_add_d(&Z, 1, &Z);
+        /* Z = Z + 1 */
+    }
+
+    if (res == MP_OKAY)
+      res = mp_exptmod(&Z, &Q, prime, &C);
+      /* C = Z ^ Q mod prime */
+    if (res == MP_OKAY)
+      res = mp_add_d(&Q, 1, &t1);
+    if (res == MP_OKAY)
+      res = mp_div_2(&t1, &t1);
+      /* t1 = (Q + 1) / 2 */
+    if (res == MP_OKAY)
+      res = mp_exptmod(n, &t1, prime, &R);
+    /* R = n ^ ((Q + 1) / 2) mod prime */
+    if (res == MP_OKAY)
+      res = mp_exptmod(n, &Q, prime, &T);
+    /* T = n ^ Q mod prime */
+    if (res == MP_OKAY)
+      res = mp_copy(&S, &M);
+    /* M = S */
+    if (res == MP_OKAY)
+      res = mp_set_int(&two, 2);
+
+    while (res == MP_OKAY && done == 0) {
+      res = mp_copy(&T, &t1);
+      i = 0;
+      while (res == MP_OKAY) {
+        if (mp_cmp_d(&t1, 1) == MP_EQ)
+            break;
+        res = mp_exptmod(&t1, &two, prime, &t1);
+        if (res == MP_OKAY)
+          i++;
+      }
+      if (res == MP_OKAY && i == 0) {
+        mp_copy(&R, ret);
+        res = MP_OKAY;
+        done = 1;
+      }
+
+      if (done == 0) {
+        if (res == MP_OKAY)
+          res = mp_sub_d(&M, i, &t1);
+        if (res == MP_OKAY)
+          res = mp_sub_d(&t1, 1, &t1);
+        if (res == MP_OKAY)
+          res = mp_exptmod(&two, &t1, prime, &t1);
+        /* t1 = 2 ^ (M - i - 1) */
+        if (res == MP_OKAY)
+          res = mp_exptmod(&C, &t1, prime, &t1);
+        /* t1 = C ^ (2 ^ (M - i - 1)) mod prime */
+        if (res == MP_OKAY)
+          res = mp_sqrmod(&t1, prime, &C);
+        /* C = (t1 * t1) mod prime */
+        if (res == MP_OKAY)
+          res = mp_mulmod(&R, &t1, prime, &R);
+        /* R = (R * t1) mod prime */
+        if (res == MP_OKAY)
+          res = mp_mulmod(&T, &C, prime, &T);
+        /* T = (T * C) mod prime */
+        if (res == MP_OKAY)
+          mp_set(&M, i);
+        /* M = i */
+      }
+    }
+  }
+
+  /* done */
+  mp_clear(&t1);
+  mp_clear(&C);
+  mp_clear(&Q);
+  mp_clear(&S);
+  mp_clear(&Z);
+  mp_clear(&M);
+  mp_clear(&T);
+  mp_clear(&R);
+  mp_clear(&two);
+
+  return res;
+}
+
+
+/* export public ECC key in ANSI X9.63 format compressed */
+int ecc_export_x963_compressed(ecc_key* key, byte* out, word32* outLen)
+{
+   word32 numlen;
+   int    ret = MP_OKAY;
+
+   if (key == NULL || out == NULL || outLen == NULL)
+       return ECC_BAD_ARG_E;
+
+   if (ecc_is_valid_idx(key->idx) == 0) {
+      return ECC_BAD_ARG_E;
+   }
+   numlen = key->dp->size;
+
+   if (*outLen < (1 + numlen)) {
+      *outLen = 1 + numlen;
+      return BUFFER_E;
+   }
+
+   /* store first byte */
+   out[0] = mp_isodd(&key->pubkey.y) ? 0x03 : 0x02;
+
+   /* pad and store x */
+   XMEMSET(out+1, 0, numlen);
+   ret = mp_to_unsigned_bin(&key->pubkey.x,
+                       out+1 + (numlen - mp_unsigned_bin_size(&key->pubkey.x)));
+   *outLen = 1 + numlen;
+   return ret;
+}
+
+
+/* d = a - b (mod c) */
+int mp_submod(mp_int* a, mp_int* b, mp_int* c, mp_int* d)
+{
+  int     res;
+  mp_int  t;
+
+  if ((res = mp_init (&t)) != MP_OKAY) {
+    return res;
+  }
+
+  if ((res = mp_sub (a, b, &t)) != MP_OKAY) {
+    mp_clear (&t);
+    return res;
+  }
+  res = mp_mod (&t, c, d);
+  mp_clear (&t);
+
+  return res;
+}
+
+
+#endif /* HAVE_COMP_KEY */
 
 #endif /* HAVE_ECC */

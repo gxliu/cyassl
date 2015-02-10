@@ -1,6 +1,6 @@
 /* asn_public.h
  *
- * Copyright (C) 2006-2013 wolfSSL Inc.
+ * Copyright (C) 2006-2014 wolfSSL Inc.
  *
  * This file is part of CyaSSL.
  *
@@ -16,7 +16,7 @@
  *
  * You should have received a copy of the GNU General Public License
  * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA
  */
 
 
@@ -62,6 +62,11 @@ enum Ctc_SigType {
     CTC_SHA512wECDSA = 526
 };
 
+enum Ctc_Encoding {
+    CTC_UTF8       = 0x0c, /* utf8      */
+    CTC_PRINTABLE  = 0x13  /* printable */
+};
+
 
 #ifdef CYASSL_CERT_GEN
 
@@ -70,20 +75,27 @@ enum Ctc_SigType {
 #endif
 
 enum Ctc_Misc {
-    CTC_NAME_SIZE    =   64,
-    CTC_DATE_SIZE    =   32,
-    CTC_MAX_ALT_SIZE = 8192,    /* may be huge */
-    CTC_SERIAL_SIZE  =    8
+    CTC_NAME_SIZE    =    64,
+    CTC_DATE_SIZE    =    32,
+    CTC_MAX_ALT_SIZE = 16384,   /* may be huge */
+    CTC_SERIAL_SIZE  =     8
 };
 
 typedef struct CertName {
     char country[CTC_NAME_SIZE];
+    char countryEnc;
     char state[CTC_NAME_SIZE];
+    char stateEnc;
     char locality[CTC_NAME_SIZE];
+    char localityEnc;
     char sur[CTC_NAME_SIZE];
+    char surEnc;
     char org[CTC_NAME_SIZE];
+    char orgEnc;
     char unit[CTC_NAME_SIZE];
+    char unitEnc;
     char commonName[CTC_NAME_SIZE];
+    char commonNameEnc;
     char email[CTC_NAME_SIZE];  /* !!!! email has to be last !!!! */
 } CertName;
 
@@ -166,8 +178,13 @@ CYASSL_API int  SetDatesBuffer(Cert*, const byte*, int);
     /* private key helpers */
     CYASSL_API int EccPrivateKeyDecode(const byte* input,word32* inOutIdx,
                                          ecc_key*,word32);
+    CYASSL_API int EccKeyToDer(ecc_key*, byte* output, word32 inLen);
 #endif
 
+/* DER encode signature */
+CYASSL_API word32 EncodeSignature(byte* out, const byte* digest, word32 digSz,
+                                  int hashOID);
+CYASSL_API int GetCTC_HashOID(int type);
 
 #ifdef __cplusplus
     } /* extern "C" */

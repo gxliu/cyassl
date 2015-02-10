@@ -9,6 +9,7 @@
 #include <ctype.h>
 #include <cyassl/ssl.h>
 #include <cyassl/ctaocrypt/types.h>
+#include <cyassl/ctaocrypt/error-crypt.h>
 
 #ifdef ATOMIC_USER
     #include <cyassl/ctaocrypt/aes.h>
@@ -34,6 +35,14 @@
     #define SNPRINTF _snprintf
 #elif defined(CYASSL_MDK_ARM)
     #include <string.h>
+#elif defined(CYASSL_TIRTOS)
+    #include <string.h>
+    #include <netdb.h>
+    #include <sys/types.h>
+    #include <arpa/inet.h>
+    #include <sys/socket.h>
+    #include <ti/sysbios/knl/Task.h>
+    #define SOCKET_T int
 #else
     #include <string.h>
     #include <sys/types.h>
@@ -81,7 +90,7 @@
 
 /* HPUX doesn't use socklent_t for third parameter to accept, unless
    _XOPEN_SOURCE_EXTENDED is defined */
-#if !defined(__hpux__) && !defined(CYASSL_MDK_ARM)
+#if !defined(__hpux__) && !defined(CYASSL_MDK_ARM) && !defined(CYASSL_IAR_ARM)
     typedef socklen_t* ACCEPT_THIRD_T;
 #else
     #if defined _XOPEN_SOURCE_EXTENDED
@@ -118,6 +127,10 @@
     #elif defined(CYASSL_MDK_ARM)
         typedef unsigned int  THREAD_RETURN;
         typedef int           THREAD_TYPE;
+        #define CYASSL_THREAD
+    #elif defined(CYASSL_TIRTOS)
+        typedef void          THREAD_RETURN;
+        typedef Task_Handle   THREAD_TYPE;
         #define CYASSL_THREAD
     #else
         typedef unsigned int  THREAD_RETURN;
@@ -159,8 +172,8 @@
 #define crlPemDir  "./certs/crl"
 
 typedef struct tcp_ready {
-    int ready;              /* predicate */
-    int port;
+    word16 ready;              /* predicate */
+    word16 port;
 #if defined(_POSIX_THREADS) && !defined(__MINGW32__)
     pthread_mutex_t mutex;
     pthread_cond_t  cond;
@@ -282,7 +295,7 @@ static INLINE int mygetopt(int argc, char** argv, const char* optstring)
 }
 
 
-#ifdef OPENSSL_EXTRA
+#if defined(OPENSSL_EXTRA) || defined(HAVE_WEBSERVER)
 
 static INLINE int PasswordCallBack(char* passwd, int sz, int rw, void* userdata)
 {
@@ -467,6 +480,9 @@ static INLINE void tcp_socket(SOCKET_T* sockfd, int udp)
 #ifdef USE_WINDOWS_API
     if (*sockfd == INVALID_SOCKET)
         err_sys("socket failed\n");
+#elif defined(CYASSL_TIRTOS)
+    if (*sockfd == -1)
+        err_sys("socket failed\n");
 #else
     if (*sockfd < 0)
         err_sys("socket failed\n");
@@ -481,7 +497,7 @@ static INLINE void tcp_socket(SOCKET_T* sockfd, int udp)
         if (res < 0)
             err_sys("setsockopt SO_NOSIGPIPE failed\n");
     }
-#elif defined(CYASSL_MDK_ARM)
+#elif defined(CYASSL_MDK_ARM) || defined (CYASSL_TIRTOS)
     /* nothing to define */
 #else  /* no S_NOSIGPIPE */
     signal(SIGPIPE, SIG_IGN);
@@ -529,7 +545,7 @@ enum {
 };
 
 
-#if !defined(CYASSL_MDK_ARM)
+#if !defined(CYASSL_MDK_ARM) && !defined(CYASSL_TIRTOS)
 static INLINE int tcp_select(SOCKET_T socketfd, int to_sec)
 {
     fd_set recvfds, errfds;
@@ -555,10 +571,15 @@ static INLINE int tcp_select(SOCKET_T socketfd, int to_sec)
 
     return TEST_SELECT_FAIL;
 }
+#elif defined(CYASSL_TIRTOS)
+static INLINE int tcp_select(SOCKET_T socketfd, int to_sec)
+{
+    return TEST_RECV_READY;
+}
 #endif /* !CYASSL_MDK_ARM */
 
 
-static INLINE void tcp_listen(SOCKET_T* sockfd, int* port, int useAnyAddr,
+static INLINE void tcp_listen(SOCKET_T* sockfd, word16* port, int useAnyAddr,
                               int udp)
 {
     SOCKADDR_IN_T addr;
@@ -620,7 +641,7 @@ static INLINE int udp_read_connect(SOCKET_T sockfd)
 }
 
 static INLINE void udp_accept(SOCKET_T* sockfd, SOCKET_T* clientfd,
-                              int useAnyAddr, int port, func_args* args)
+                              int useAnyAddr, word16 port, func_args* args)
 {
     SOCKADDR_IN_T addr;
 
@@ -665,14 +686,19 @@ static INLINE void udp_accept(SOCKET_T* sockfd, SOCKET_T* clientfd,
     pthread_cond_signal(&ready->cond);
     pthread_mutex_unlock(&ready->mutex);
     }
+#elif defined (CYASSL_TIRTOS)
+    /* Need mutex? */
+    tcp_ready* ready = args->signal;
+    ready->ready = 1;
+    ready->port = port;
 #endif
 
     *clientfd = udp_read_connect(*sockfd);
 }
 
 static INLINE void tcp_accept(SOCKET_T* sockfd, SOCKET_T* clientfd,
-                              func_args* args, int port, int useAnyAddr,
-                              int udp)
+                              func_args* args, word16 port, int useAnyAddr,
+                              int udp, int ready_file)
 {
     SOCKADDR_IN_T client;
     socklen_t client_len = sizeof(client);
@@ -694,7 +720,23 @@ static INLINE void tcp_accept(SOCKET_T* sockfd, SOCKET_T* clientfd,
     pthread_cond_signal(&ready->cond);
     pthread_mutex_unlock(&ready->mutex);
     }
+#elif defined (CYASSL_TIRTOS)
+    /* Need mutex? */
+    tcp_ready* ready = args->signal;
+    ready->ready = 1;
+    ready->port = port;
 #endif
+
+    if (ready_file) {
+#ifndef NO_FILESYSTEM
+        FILE* srf = fopen("./server_ready", "w+");
+
+        if (srf) {
+            fputs("ready", srf);
+            fclose(srf);
+        }
+#endif
+    }
 
     *clientfd = accept(*sockfd, (struct sockaddr*)&client,
                       (ACCEPT_THIRD_T)&client_len);
@@ -715,7 +757,7 @@ static INLINE void tcp_set_nonblocking(SOCKET_T* sockfd)
         int ret = ioctlsocket(*sockfd, FIONBIO, &blocking);
         if (ret == SOCKET_ERROR)
             err_sys("ioctlsocket failed");
-    #elif defined(CYASSL_MDK_ARM)
+    #elif defined(CYASSL_MDK_ARM) || defined (CYASSL_TIRTOS)
          /* non blocking not suppported, for now */ 
     #else
         int flags = fcntl(*sockfd, F_GETFL, 0);
@@ -798,6 +840,8 @@ static INLINE unsigned int my_psk_server_cb(CYASSL* ssl, const char* identity,
         return (double)count.QuadPart / freq.QuadPart;
     }
 
+#elif defined(CYASSL_TIRTOS)
+    extern double current_time();
 #else
 
 #if !defined(CYASSL_MDK_ARM)
@@ -894,6 +938,25 @@ static INLINE int myVerify(int preverify, CYASSL_X509_STORE_CTX* store)
 #endif /* VERIFY_CALLBACK */
 
 
+static INLINE int myDateCb(int preverify, CYASSL_X509_STORE_CTX* store)
+{
+    char buffer[CYASSL_MAX_ERROR_SZ];
+    (void)preverify;
+
+    printf("In verification callback, error = %d, %s\n", store->error,
+                                 CyaSSL_ERR_error_string(store->error, buffer));
+    printf("Subject's domain name is %s\n", store->domain);
+
+    if (store->error == ASN_BEFORE_DATE_E || store->error == ASN_AFTER_DATE_E) {
+        printf("Overriding cert date error as example for bad clock testing\n");
+        return 1;
+    }
+    printf("Cert error is not date error, not overriding\n");
+
+    return 0;
+}
+
+
 #ifdef HAVE_CRL
 
 static INLINE void CRL_CallBack(const char* url)
@@ -912,6 +975,7 @@ static INLINE void CaCb(unsigned char* der, int sz, int type)
 }
 
 
+#ifndef NO_DH
 static INLINE void SetDH(CYASSL* ssl)
 {
     /* dh1024 p */
@@ -965,7 +1029,7 @@ static INLINE void SetDHCtx(CYASSL_CTX* ctx)
 
     CyaSSL_CTX_SetTmpDH(ctx, p, sizeof(p), g, sizeof(g));
 }
-
+#endif /* NO_DH */
 #endif /* !NO_CERTS */
 
 #ifdef HAVE_CAVIUM
@@ -1035,6 +1099,7 @@ static INLINE int CurrentDir(const char* str)
 
 #elif defined(CYASSL_MDK_ARM)
     /* KEIL-RL File System does not support relative directry */
+#elif defined(CYASSL_TIRTOS)
 #else
 
 #ifndef MAX_PATH
@@ -1146,7 +1211,8 @@ static INLINE int CurrentDir(const char* str)
         if (ptr == NULL)
             return;
 
-        mt = (memoryTrack*)((byte*)ptr - sizeof(memoryTrack));
+        mt = (memoryTrack*)ptr;
+        --mt;   /* same as minus sizeof(memoryTrack), removes header */
 
 #ifdef DO_MEM_STATS 
         ourMemStats.currentBytes -= mt->u.hint.thisSize; 
@@ -1162,7 +1228,8 @@ static INLINE int CurrentDir(const char* str)
 
         if (ptr) {
             /* if realloc is bigger, don't overread old ptr */
-            memoryTrack* mt = (memoryTrack*)((byte*)ptr - sizeof(memoryTrack));
+            memoryTrack* mt = (memoryTrack*)ptr;
+            --mt;  /* same as minus sizeof(memoryTrack), removes header */
 
             if (mt->u.hint.thisSize < sz)
                 sz = mt->u.hint.thisSize;
@@ -1339,11 +1406,19 @@ static INLINE int myMacEncryptCb(CYASSL* ssl, unsigned char* macOut,
     /* hmac, not needed if aead mode */
     CyaSSL_SetTlsHmacInner(ssl, myInner, macInSz, macContent, macVerify);
 
-    HmacSetKey(&hmac, CyaSSL_GetHmacType(ssl),
+    ret = HmacSetKey(&hmac, CyaSSL_GetHmacType(ssl),
                CyaSSL_GetMacSecret(ssl, macVerify), CyaSSL_GetHmacSize(ssl));
-    HmacUpdate(&hmac, myInner, sizeof(myInner));
-    HmacUpdate(&hmac, macIn, macInSz);
-    HmacFinal(&hmac, macOut);
+    if (ret != 0)
+        return ret;
+    ret = HmacUpdate(&hmac, myInner, sizeof(myInner));
+    if (ret != 0)
+        return ret;
+    ret = HmacUpdate(&hmac, macIn, macInSz);
+    if (ret != 0)
+        return ret;
+    ret = HmacFinal(&hmac, macOut);
+    if (ret != 0)
+        return ret;
 
 
     /* encrypt setup on first time */
@@ -1446,11 +1521,19 @@ static INLINE int myDecryptVerifyCb(CYASSL* ssl,
 
     CyaSSL_SetTlsHmacInner(ssl, myInner, macInSz, macContent, macVerify);
 
-    HmacSetKey(&hmac, CyaSSL_GetHmacType(ssl),
+    ret = HmacSetKey(&hmac, CyaSSL_GetHmacType(ssl),
                CyaSSL_GetMacSecret(ssl, macVerify), digestSz);
-    HmacUpdate(&hmac, myInner, sizeof(myInner));
-    HmacUpdate(&hmac, decOut + ivExtra, macInSz);
-    HmacFinal(&hmac, verify);
+    if (ret != 0)
+        return ret;
+    ret = HmacUpdate(&hmac, myInner, sizeof(myInner));
+    if (ret != 0)
+        return ret;
+    ret = HmacUpdate(&hmac, decOut + ivExtra, macInSz);
+    if (ret != 0)
+        return ret;
+    ret = HmacFinal(&hmac, verify);
+    if (ret != 0)
+        return ret;
 
     if (memcmp(verify, decOut + decSz - digestSz - pad - padByte,
                digestSz) != 0) {
@@ -1489,8 +1572,8 @@ static INLINE void SetupAtomicUser(CYASSL_CTX* ctx, CYASSL* ssl)
 
 static INLINE void FreeAtomicUser(CYASSL* ssl)
 {
-    AtomicEncCtx* encCtx = CyaSSL_GetMacEncryptCtx(ssl);
-    AtomicDecCtx* decCtx = CyaSSL_GetDecryptVerifyCtx(ssl);
+    AtomicEncCtx* encCtx = (AtomicEncCtx*)CyaSSL_GetMacEncryptCtx(ssl);
+    AtomicDecCtx* decCtx = (AtomicDecCtx*)CyaSSL_GetDecryptVerifyCtx(ssl);
 
     free(decCtx);
     free(encCtx);
@@ -1514,7 +1597,10 @@ static INLINE int myEccSign(CYASSL* ssl, const byte* in, word32 inSz,
     (void)ssl;
     (void)ctx;
 
-    InitRng(&rng);
+    ret = InitRng(&rng);
+    if (ret != 0)
+        return ret;
+
     ecc_init(&myKey);
     
     ret = EccPrivateKeyDecode(key, &idx, &myKey, keySz);    
@@ -1561,7 +1647,10 @@ static INLINE int myRsaSign(CYASSL* ssl, const byte* in, word32 inSz,
     (void)ssl;
     (void)ctx;
 
-    InitRng(&rng);
+    ret = InitRng(&rng);
+    if (ret != 0)
+        return ret;
+
     InitRsaKey(&myKey, NULL);
     
     ret = RsaPrivateKeyDecode(key, &idx, &myKey, keySz);    
@@ -1612,7 +1701,10 @@ static INLINE int myRsaEnc(CYASSL* ssl, const byte* in, word32 inSz,
     (void)ssl;
     (void)ctx;
 
-    InitRng(&rng);
+    ret = InitRng(&rng);
+    if (ret != 0)
+        return ret;
+
     InitRsaKey(&myKey, NULL);
     
     ret = RsaPublicKeyDecode(key, &idx, &myKey, keySz);
@@ -1672,7 +1764,10 @@ static INLINE void SetupPkCallbacks(CYASSL_CTX* ctx, CYASSL* ssl)
 #endif /* HAVE_PK_CALLBACKS */
 
 
-#if defined(__hpux__) || defined(__MINGW32__)
+
+
+
+#if defined(__hpux__) || defined(__MINGW32__) || defined (CYASSL_TIRTOS)
 
 /* HP/UX doesn't have strsep, needed by test/suites.c */
 static INLINE char* strsep(char **stringp, const char *delim)

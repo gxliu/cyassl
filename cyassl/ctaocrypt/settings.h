@@ -1,6 +1,6 @@
 /* settings.h
  *
- * Copyright (C) 2006-2013 wolfSSL Inc.
+ * Copyright (C) 2006-2014 wolfSSL Inc.
  *
  * This file is part of CyaSSL.
  *
@@ -16,7 +16,7 @@
  *
  * You should have received a copy of the GNU General Public License
  * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA
  */
 
 /* Place OS specific preprocessor flags, defines, includes here, will be
@@ -51,6 +51,9 @@
 /* Uncomment next line if using Microchip TCP/IP stack, version 6 or later */
 /* #define MICROCHIP_TCPIP */
 
+/* Uncomment next line if using PIC32MZ Crypto Engine */
+/* #define CYASSL_MICROCHIP_PIC32MZ */
+        
 /* Uncomment next line if using FreeRTOS */
 /* #define FREERTOS */
 
@@ -81,11 +84,30 @@
 /* Uncomment next line if using QL SEP settings */
 /* #define CYASSL_QL */
 
+/* Uncomment next line if building for EROAD */
+/* #define CYASSL_EROAD */
+      
+/* Uncomment next line if building for IAR EWARM */
+/* #define CYASSL_IAR_ARM */
+
+/* Uncomment next line if using TI-RTOS settings */
+/* #define CYASSL_TIRTOS */
+
+/* Uncomment next line if building with PicoTCP */
+/* #define CYASSL_PICOTCP */
+
+/* Uncomment next line if building for PicoTCP demo bundle */
+/* #define CYASSL_PICOTCP_DEMO */
 
 #include <cyassl/ctaocrypt/visibility.h>
 
 #ifdef IPHONE
     #define SIZEOF_LONG_LONG 8
+#endif
+
+
+#ifdef CYASSL_USER_SETTINGS
+    #include <user_settings.h>
 #endif
 
 
@@ -114,7 +136,27 @@
     #include "nx_api.h"
 #endif
 
+#if defined(HAVE_LWIP_NATIVE) /* using LwIP native TCP socket */
+    #define CYASSL_LWIP
+    #define NO_WRITEV
+    #define SINGLE_THREADED
+    #define CYASSL_USER_IO
+    #define NO_FILESYSTEM
+#endif 
+    
+#if defined(CYASSL_IAR_ARM)
+    #define NO_MAIN_DRIVER
+    #define SINGLE_THREADED
+    #define USE_CERT_BUFFERS_1024
+    #define BENCH_EMBEDDED
+    #define NO_FILESYSTEM
+    #define NO_WRITEV
+    #define CYASSL_USER_IO
+    #define  BENCH_EMBEDDED
+#endif
+      
 #ifdef MICROCHIP_PIC32
+    /* #define CYASSL_MICROCHIP_PIC32MZ */
     #define SIZEOF_LONG_LONG 8
     #define SINGLE_THREADED
     #define CYASSL_USER_IO
@@ -125,6 +167,18 @@
     #define TFM_TIMING_RESISTANT
 #endif
 
+#ifdef CYASSL_MICROCHIP_PIC32MZ
+    #define CYASSL_PIC32MZ_CE
+    #define CYASSL_PIC32MZ_CRYPT
+    #define HAVE_AES_ENGINE
+    #define CYASSL_PIC32MZ_RNG
+    /* #define CYASSL_PIC32MZ_HASH */
+    #define CYASSL_AES_COUNTER
+    #define HAVE_AESGCM
+    #define NO_BIG_INT
+
+#endif
+
 #ifdef MICROCHIP_TCPIP_V5
     /* include timer functions */
     #include "TCPIP Stack/TCPIP.h"
@@ -132,58 +186,73 @@
 
 #ifdef MICROCHIP_TCPIP
     /* include timer, NTP functions */
-    #include "system/system_services.h"
     #ifdef MICROCHIP_MPLAB_HARMONY
         #include "tcpip/tcpip.h"
     #else
+        #include "system/system_services.h"
         #include "tcpip/sntp.h"
     #endif
 #endif
 
 #ifdef MBED
-    #define SINGLE_THREADED
     #define CYASSL_USER_IO
+    #define NO_FILESYSTEM
+    #define NO_CERT
+    #define USE_CERT_BUFFERS_1024
     #define NO_WRITEV
     #define NO_DEV_RANDOM
     #define NO_SHA512
     #define NO_DH
     #define NO_DSA
     #define NO_HC128
-#endif /* MBED */
-
-#ifdef CYASSL_TYTO
-    #include "rand.h"
-    #define FREERTOS
-    #define NO_FILESYSTEM
-    #define CYASSL_USER_IO
-    #define NO_DEV_RANDOM
-    #define HAVE_HKDF
-    #define NO_MAIN_DRIVER
-    #define CYASSL_LWIP
-
-    /* ECC and optimizations */
-    #define FREESCALE_MMCAU 1
     #define HAVE_ECC
-    #define HAVE_ECC_ENCRYPT
-    #define USE_FAST_MATH
-    #define TFM_TIMING_RESISTANT
-    #define TFM_ECC256
-    #define TFM_ARM
-    #define ECC_SHAMIR
-    #define FP_ECC
-    #define FP_ENTRIES 2
-    #define FP_LUT 4
-    #define FP_MAX_BITS 512
+    #define NO_SESSION_CACHE
+    #define CYASSL_CMSIS_RTOS
+#endif
 
-    /* remove features */
+
+#ifdef CYASSL_EROAD
+    #define FREESCALE_MQX
+    #define FREESCALE_MMCAU
+    #define SINGLE_THREADED
+    #define NO_STDIO_FILESYSTEM
+    #define CYASSL_LEANPSK
+    #define HAVE_NULL_CIPHER
     #define NO_OLD_TLS
-    #define NO_MD4
-    #define NO_RABBIT
-    #define NO_HC128
+    #define NO_ASN
+    #define NO_BIG_INT
     #define NO_RSA
     #define NO_DSA
+    #define NO_DH
+    #define NO_CERTS
     #define NO_PWDBASED
-    #define NO_PSK
+    #define NO_DES3
+    #define NO_MD4
+    #define NO_RC4
+    #define NO_MD5
+    #define NO_SESSION_CACHE
+    #define NO_MAIN_DRIVER
+#endif
+
+#ifdef CYASSL_PICOTCP
+    #define errno pico_err
+    #include "pico_defines.h"
+    #include "pico_stack.h"
+    #include "pico_constants.h"
+    #define CUSTOM_RAND_GENERATE pico_rand
+#endif
+
+#ifdef CYASSL_PICOTCP_DEMO
+    #define CYASSL_STM32
+    #define USE_FAST_MATH
+    #define TFM_TIMING_RESISTANT
+    #define XMALLOC(s, h, type)  PICO_ZALLOC((s))
+    #define XFREE(p, h, type)    PICO_FREE((p))
+    #define SINGLE_THREADED
+    #define NO_WRITEV
+    #define CYASSL_USER_IO
+    #define NO_DEV_RANDOM
+    #define NO_FILESYSTEM
 #endif
 
 #ifdef FREERTOS_WINSIM
@@ -194,7 +263,7 @@
 
 /* Micrium will use Visual Studio for compilation but not the Win32 API */
 #if defined(_WIN32) && !defined(MICRIUM) && !defined(FREERTOS) \
-        && !defined(EBSNET)
+        && !defined(EBSNET) && !defined(CYASSL_EROAD)
     #define USE_WINDOWS_API
 #endif
 
@@ -237,6 +306,28 @@
         #include "FreeRTOS.h"
         #include "semphr.h"
     #endif
+#endif
+
+#ifdef CYASSL_TIRTOS
+    #define SIZEOF_LONG_LONG 8
+    #define NO_WRITEV
+    #define NO_CYASSL_DIR
+    #define USE_FAST_MATH
+    #define TFM_TIMING_RESISTANT
+    #define NO_DEV_RANDOM
+    #define NO_FILESYSTEM
+    #define USE_CERT_BUFFERS_2048
+    #define NO_ERROR_STRINGS
+    #define USER_TIME
+
+    #ifdef __IAR_SYSTEMS_ICC__
+        #pragma diag_suppress=Pa089
+    #elif !defined(__GNUC__)
+        /* Suppress the sslpro warning */
+        #pragma diag_suppress=11
+    #endif
+
+    #include <ti/ndk/nettools/mytime/mytime.h>
 #endif
 
 #ifdef EBSNET
@@ -608,6 +699,11 @@
 #endif
 
 
+/* FreeScale MMCAU hardware crypto has 4 byte alignment */
+#ifdef FREESCALE_MMCAU
+    #define CYASSL_MMCAU_ALIGNMENT 4
+#endif
+
 /* if using hardware crypto and have alignment requirements, specify the
    requirement here.  The record header of SSL/TLS will prvent easy alignment.
    This hint tries to help as much as possible.  */
@@ -616,6 +712,8 @@
         #define CYASSL_GENERAL_ALIGNMENT 16
     #elif defined(XSTREAM_ALIGNMENT)
         #define CYASSL_GENERAL_ALIGNMENT  4
+    #elif defined(FREESCALE_MMCAU)
+        #define CYASSL_GENERAL_ALIGNMENT  CYASSL_MMCAU_ALIGNMENT
     #else 
         #define CYASSL_GENERAL_ALIGNMENT  0 
     #endif
@@ -626,6 +724,12 @@
     #undef NO_SKID
     #define NO_SKID
 #endif
+
+
+#ifdef __INTEL_COMPILER
+    #pragma warning(disable:2259) /* explicit casts to smaller sizes, disable */
+#endif
+
 
 /* Place any other flags or defines here */
 

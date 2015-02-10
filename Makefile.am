@@ -21,6 +21,23 @@ dist_doc_DATA=
 @INC_AMINCLUDE@
 DISTCLEANFILES+= aminclude.am
 
+CLEANFILES+= cert.der \
+             cert.pem \
+             certecc.der \
+             certecc.pem \
+             certreq.der \
+             certreq.pem \
+             key.der \
+             key.pem \
+             ntru-cert.der \
+             ntru-cert.pem \
+             ntru-key.raw \
+             othercert.der \
+             othercert.pem \
+             pkcs7cert.der \
+             pkcs7envelopedData.der \
+             pkcs7signedData.der
+
 exampledir = $(docdir)/example
 dist_example_DATA=
 
@@ -30,13 +47,17 @@ EXTRA_DIST+= lib/dummy
 
 EXTRA_DIST+= cyassl-ntru.vcproj
 EXTRA_DIST+= cyassl.vcproj
+EXTRA_DIST+= cyassl.vcxproj
 EXTRA_DIST+= cyassl-iphone.xcodeproj/project.pbxproj
 EXTRA_DIST+= cyassl-ios.xcodeproj/project.pbxproj
 EXTRA_DIST+= cyassl-ntru.sln
 EXTRA_DIST+= cyassl.sln
+EXTRA_DIST+= cyassl64.sln
 EXTRA_DIST+= valgrind-error.sh
 EXTRA_DIST+= gencertbuf.pl
 EXTRA_DIST+= IDE 
+EXTRA_DIST+= README.md
+EXTRA_DIST+= LICENSING
 
 include cyassl/include.am
 include certs/include.am
@@ -58,9 +79,10 @@ include testsuite/include.am
 include tests/include.am
 include sslSniffer/sslSnifferTest/include.am
 include rpm/include.am
-include mqx/ctaocrypt_test/Sources/include.am
+# TODO: fix, this commented out mqx ones have spaces in file names
+#include mqx/wolfcrypt_test/Sources/include.am
 include mqx/cyassl/include.am
-include mqx/cyassl_client/Sources/include.am
+#include mqx/cyassl_client/Sources/include.am
 include mqx/util_lib/Sources/include.am
 include mplabx/include.am
 include mplabx/ctaocrypt_benchmark.X/nbproject/include.am
@@ -71,15 +93,21 @@ include mcapi/ctaocrypt_mcapi.X/nbproject/include.am
 include mcapi/ctaocrypt_test.X/nbproject/include.am
 include mcapi/cyassl.X/nbproject/include.am
 include mcapi/zlib.X/nbproject/include.am
+include tirtos/include.am
 
 if USE_VALGRIND
 TESTS_ENVIRONMENT=./valgrind-error.sh
 endif
 
+TEST_EXTENSIONS=.test
 TESTS += $(check_PROGRAMS)
 test: check
+tests/unit.log: testsuite/testsuite.log
 
-DISTCLEANFILES+= cyassl-config 
+DISTCLEANFILES+= cyassl-config
+# fips files shouldn't be left after make distclean
+DISTCLEANFILES+= ctaocrypt/src/fips.c
+DISTCLEANFILES+= ctaocrypt/src/fips_test.c
 
 maintainer-clean-local:
 	-rm Makefile.in

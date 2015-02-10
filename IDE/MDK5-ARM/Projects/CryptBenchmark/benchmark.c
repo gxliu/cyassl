@@ -1,6 +1,6 @@
 /* benchmark.c
  *
- * Copyright (C) 2006-2013 wolfSSL Inc.
+ * Copyright (C) 2006-2014 wolfSSL Inc.
  *
  * This file is part of CyaSSL.
  *
@@ -16,7 +16,7 @@
  *
  * You should have received a copy of the GNU General Public License
  * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA
  */
 
 /* CTaoCrypt benchmark */
@@ -50,6 +50,9 @@
     #include "cavium_sysdep.h"
     #include "cavium_common.h"
     #include "cavium_ioctl.h"
+#endif
+#ifdef HAVE_NTRU
+    #include "ntru_crypto.h"
 #endif
 
 #if defined(CYASSL_MDK_ARM)
@@ -85,6 +88,7 @@ void bench_rabbit(void);
 void bench_aes(int);
 void bench_aesgcm(void);
 void bench_aesccm(void);
+void bench_aesctr(void);
 void bench_camellia(void);
 
 void bench_md5(void);
@@ -99,6 +103,9 @@ void bench_dh(void);
 #ifdef HAVE_ECC
 void bench_eccKeyGen(void);
 void bench_eccKeyAgree(void);
+#endif
+#ifdef HAVE_NTRU
+void bench_ntruKeyGen(void);
 #endif
 
 double current_time(int);
@@ -127,6 +134,9 @@ static int OpenNitroxDevice(int dma_mode,int dev_id)
 
 #endif
 
+#if defined(DEBUG_CYASSL) && !defined(HAVE_VALGRIND)
+    CYASSL_API int CyaSSL_Debugging_ON();
+#endif
 
 /* so embedded projects can pull in tests on their own */
 #if !defined(NO_MAIN_DRIVER)
@@ -140,6 +150,10 @@ int main(int argc, char** argv)
 int benchmark_test(void *args) 
 {
 #endif
+
+    #if defined(DEBUG_CYASSL) && !defined(HAVE_VALGRIND)
+        CyaSSL_Debugging_ON();
+    #endif
 
 	#ifdef HAVE_CAVIUM
     int ret = OpenNitroxDevice(CAVIUM_DIRECT, CAVIUM_DEV_ID);
@@ -155,6 +169,11 @@ int benchmark_test(void *args)
 #ifdef HAVE_AESGCM
     bench_aesgcm();
 #endif
+
+#ifdef CYASSL_AES_COUNTER
+    bench_aesctr();
+#endif
+
 #ifdef HAVE_AESCCM
     bench_aesccm();
 #endif
@@ -209,6 +228,10 @@ int benchmark_test(void *args)
     bench_rsaKeyGen();
 #endif
 
+#ifdef HAVE_NTRU
+    bench_ntruKeyGen();
+#endif
+
 #ifdef HAVE_ECC 
     bench_eccKeyGen();
     bench_eccKeyAgree();
@@ -219,23 +242,42 @@ int benchmark_test(void *args)
 
 
 #ifdef BENCH_EMBEDDED
-const int numBlocks = 25;       /* how many kB/megs to test (en/de)cryption */
-const char blockType[] = "kB";  /* used in printf output */
-const int times     = 1;        /* public key iterations */
+enum BenchmarkBounds {
+    numBlocks  = 25, /* how many kB to test (en/de)cryption */
+    ntimes     = 1,
+    genTimes   = 5,  /* public key iterations */
+    agreeTimes = 5
+};
+static const char blockType[] = "kB";   /* used in printf output */
 #else
-const int numBlocks = 5;
-const char blockType[] = "megs";
-const int times     = 100;
+enum BenchmarkBounds {
+    numBlocks  = 5,  /* how many megs to test (en/de)cryption */
+    ntimes     = 100,
+    genTimes   = 100,
+    agreeTimes = 100
+};
+static const char blockType[] = "megs"; /* used in printf output */
 #endif
 
-const byte key[] = 
+
+/* use kB instead of mB for embedded benchmarking */
+#ifdef BENCH_EMBEDDED
+static byte plain [1024];
+#else
+static byte plain [1024*1024];
+#endif
+
+
+#ifndef NO_AES
+
+static const byte key[] = 
 {
     0x01,0x23,0x45,0x67,0x89,0xab,0xcd,0xef,
     0xfe,0xde,0xba,0x98,0x76,0x54,0x32,0x10,
     0x89,0xab,0xcd,0xef,0x01,0x23,0x45,0x67
 };
 
-const byte iv[] = 
+static const byte iv[] = 
 {
     0x12,0x34,0x56,0x78,0x90,0xab,0xcd,0xef,
     0x01,0x01,0x01,0x01,0x01,0x01,0x01,0x01,
@@ -246,27 +288,31 @@ const byte iv[] =
 
 /* use kB instead of mB for embedded benchmarking */
 #ifdef BENCH_EMBEDDED
-byte plain [1024];
-byte cipher[1024];
+static byte cipher[1024];
 #else
-byte plain [1024*1024];
-byte cipher[1024*1024];
+static byte cipher[1024*1024];
 #endif
 
 
-#ifndef NO_AES
 void bench_aes(int show)
 {
     Aes    enc;
     double start, total, persec;
     int    i;
+    int    ret;
 
 #ifdef HAVE_CAVIUM
-    if (AesInitCavium(&enc, CAVIUM_DEV_ID) != 0)
+    if (AesInitCavium(&enc, CAVIUM_DEV_ID) != 0) {
         printf("aes init cavium failed\n");
+        return;
+    }
 #endif
 
-    AesSetKey(&enc, key, 16, iv, AES_ENCRYPTION);
+    ret = AesSetKey(&enc, key, 16, iv, AES_ENCRYPTION);
+    if (ret != 0) {
+        printf("AesSetKey failed, ret = %d\n", ret);
+        return;
+    }
     start = current_time(1);
 
     for(i = 0; i < numBlocks; i++)
@@ -281,7 +327,7 @@ void bench_aes(int show)
 #endif
 
     if (show)
-        printf("AES      %d %s took %5.3f seconds, %6.2f MB/s\n", numBlocks,
+        printf("AES      %d %s took %5.3f seconds, %7.3f MB/s\n", numBlocks,
                                                   blockType, total, persec);
 #ifdef HAVE_CAVIUM
     AesFreeCavium(&enc);
@@ -290,8 +336,10 @@ void bench_aes(int show)
 #endif
 
 
-byte additional[13];
-byte tag[16];
+#if defined(HAVE_AESGCM) || defined(HAVE_AESCCM)
+    static byte additional[13];
+    static byte tag[16];
+#endif
 
 
 #ifdef HAVE_AESGCM
@@ -316,10 +364,37 @@ void bench_aesgcm(void)
     persec = persec / 1024;
 #endif
 
-    printf("AES-GCM  %d %s took %5.3f seconds, %6.2f MB/s\n", numBlocks,
+    printf("AES-GCM  %d %s took %5.3f seconds, %7.3f MB/s\n", numBlocks,
                                               blockType, total, persec);
 }
 #endif
+
+#ifdef CYASSL_AES_COUNTER
+void bench_aesctr(void)
+{
+    Aes    enc;
+    double start, total, persec;
+    int    i;
+
+    AesSetKeyDirect(&enc, key, AES_BLOCK_SIZE, iv, AES_ENCRYPTION);
+    start = current_time(1);
+
+    for(i = 0; i < numBlocks; i++)
+        AesCtrEncrypt(&enc, plain, cipher, sizeof(plain));
+
+    total = current_time(0) - start;
+
+    persec = 1 / total * numBlocks;
+#ifdef BENCH_EMBEDDED
+    /* since using kB, convert to MB/s */
+    persec = persec / 1024;
+#endif
+
+    printf("AES-CTR  %d %s took %5.3f seconds, %7.3f MB/s\n", numBlocks,
+                                              blockType, total, persec);
+}
+#endif
+
 
 
 #ifdef HAVE_AESCCM
@@ -344,7 +419,7 @@ void bench_aesccm(void)
     persec = persec / 1024;
 #endif
 
-    printf("AES-CCM  %d %s took %5.3f seconds, %6.2f MB/s\n", numBlocks,
+    printf("AES-CCM  %d %s took %5.3f seconds, %7.3f MB/s\n", numBlocks,
                                               blockType, total, persec);
 }
 #endif
@@ -355,9 +430,13 @@ void bench_camellia(void)
 {
     Camellia cam;
     double start, total, persec;
-    int    i;
+    int    i, ret;
 
-    CamelliaSetKey(&cam, key, 16, iv);
+    ret = CamelliaSetKey(&cam, key, 16, iv);
+    if (ret != 0) {
+        printf("CamelliaSetKey failed, ret = %d\n", ret);
+        return;
+    }
     start = current_time(1);
 
     for(i = 0; i < numBlocks; i++)
@@ -371,7 +450,7 @@ void bench_camellia(void)
     persec = persec / 1024;
 #endif
 
-    printf("Camellia %d %s took %5.3f seconds, %6.2f MB/s\n", numBlocks,
+    printf("Camellia %d %s took %5.3f seconds, %7.3f MB/s\n", numBlocks,
                                               blockType, total, persec);
 }
 #endif
@@ -382,13 +461,17 @@ void bench_des(void)
 {
     Des3   enc;
     double start, total, persec;
-    int    i;
+    int    i, ret;
 
 #ifdef HAVE_CAVIUM
     if (Des3_InitCavium(&enc, CAVIUM_DEV_ID) != 0)
         printf("des3 init cavium failed\n");
 #endif
-    Des3_SetKey(&enc, key, iv, DES_ENCRYPTION);
+    ret = Des3_SetKey(&enc, key, iv, DES_ENCRYPTION);
+    if (ret != 0) {
+        printf("Des3_SetKey failed, ret = %d\n", ret);
+        return;
+    }
     start = current_time(1);
 
     for(i = 0; i < numBlocks; i++)
@@ -402,7 +485,7 @@ void bench_des(void)
     persec = persec / 1024;
 #endif
 
-    printf("3DES     %d %s took %5.3f seconds, %6.2f MB/s\n", numBlocks,
+    printf("3DES     %d %s took %5.3f seconds, %7.3f MB/s\n", numBlocks,
                                               blockType, total, persec);
 #ifdef HAVE_CAVIUM
     Des3_FreeCavium(&enc);
@@ -436,7 +519,7 @@ void bench_arc4(void)
     persec = persec / 1024;
 #endif
 
-    printf("ARC4     %d %s took %5.3f seconds, %6.2f MB/s\n", numBlocks,
+    printf("ARC4     %d %s took %5.3f seconds, %7.3f MB/s\n", numBlocks,
                                               blockType, total, persec);
 #ifdef HAVE_CAVIUM
     Arc4FreeCavium(&enc);
@@ -465,7 +548,7 @@ void bench_hc128(void)
     persec = persec / 1024;
 #endif
 
-    printf("HC128    %d %s took %5.3f seconds, %6.2f MB/s\n", numBlocks,
+    printf("HC128    %d %s took %5.3f seconds, %7.3f MB/s\n", numBlocks,
                                               blockType, total, persec);
 }
 #endif /* HAVE_HC128 */
@@ -491,7 +574,7 @@ void bench_rabbit(void)
     persec = persec / 1024;
 #endif
 
-    printf("RABBIT   %d %s took %5.3f seconds, %6.2f MB/s\n", numBlocks,
+    printf("RABBIT   %d %s took %5.3f seconds, %7.3f MB/s\n", numBlocks,
                                               blockType, total, persec);
 }
 #endif /* NO_RABBIT */
@@ -520,7 +603,7 @@ void bench_md5(void)
     persec = persec / 1024;
 #endif
 
-    printf("MD5      %d %s took %5.3f seconds, %6.2f MB/s\n", numBlocks,
+    printf("MD5      %d %s took %5.3f seconds, %7.3f MB/s\n", numBlocks,
                                               blockType, total, persec);
 }
 #endif /* NO_MD5 */
@@ -532,9 +615,13 @@ void bench_sha(void)
     Sha    hash;
     byte   digest[SHA_DIGEST_SIZE];
     double start, total, persec;
-    int    i;
+    int    i, ret;
         
-    InitSha(&hash);
+    ret = InitSha(&hash);
+    if (ret != 0) {
+        printf("InitSha failed, ret = %d\n", ret);
+        return;
+    }
     start = current_time(1);
     
     for(i = 0; i < numBlocks; i++)
@@ -549,7 +636,7 @@ void bench_sha(void)
     persec = persec / 1024;
 #endif
 
-    printf("SHA      %d %s took %5.3f seconds, %6.2f MB/s\n", numBlocks,
+    printf("SHA      %d %s took %5.3f seconds, %7.3f MB/s\n", numBlocks,
                                               blockType, total, persec);
 }
 #endif /* NO_SHA */
@@ -561,15 +648,28 @@ void bench_sha256(void)
     Sha256 hash;
     byte   digest[SHA256_DIGEST_SIZE];
     double start, total, persec;
-    int    i;
+    int    i, ret;
         
-    InitSha256(&hash);
+    ret = InitSha256(&hash);
+    if (ret != 0) {
+        printf("InitSha256 failed, ret = %d\n", ret);
+        return;
+    }
     start = current_time(1);
     
-    for(i = 0; i < numBlocks; i++)
-        Sha256Update(&hash, plain, sizeof(plain));
+    for(i = 0; i < numBlocks; i++) {
+        ret = Sha256Update(&hash, plain, sizeof(plain));
+        if (ret != 0) {
+            printf("Sha256Update failed, ret = %d\n", ret);
+            return;
+        }
+    }
    
-    Sha256Final(&hash, digest);
+    ret = Sha256Final(&hash, digest);
+    if (ret != 0) {
+        printf("Sha256Final failed, ret = %d\n", ret);
+        return;
+    }
 
     total = current_time(0) - start;
     persec = 1 / total * numBlocks;
@@ -578,7 +678,7 @@ void bench_sha256(void)
     persec = persec / 1024;
 #endif
 
-    printf("SHA-256  %d %s took %5.3f seconds, %6.2f MB/s\n", numBlocks,
+    printf("SHA-256  %d %s took %5.3f seconds, %7.3f MB/s\n", numBlocks,
                                               blockType, total, persec);
 }
 #endif
@@ -589,15 +689,28 @@ void bench_sha512(void)
     Sha512 hash;
     byte   digest[SHA512_DIGEST_SIZE];
     double start, total, persec;
-    int    i;
+    int    i, ret;
         
-    InitSha512(&hash);
+    ret = InitSha512(&hash);
+    if (ret != 0) {
+        printf("InitSha512 failed, ret = %d\n", ret);
+        return;
+    }
     start = current_time(1);
     
-    for(i = 0; i < numBlocks; i++)
-        Sha512Update(&hash, plain, sizeof(plain));
-   
-    Sha512Final(&hash, digest);
+    for(i = 0; i < numBlocks; i++) {
+        ret = Sha512Update(&hash, plain, sizeof(plain));
+        if (ret != 0) {
+            printf("Sha512Update failed, ret = %d\n", ret);
+            return;
+        }
+    }
+
+    ret = Sha512Final(&hash, digest);
+    if (ret != 0) {
+        printf("Sha512Final failed, ret = %d\n", ret);
+        return;
+    }
 
     total = current_time(0) - start;
     persec = 1 / total * numBlocks;
@@ -606,7 +719,7 @@ void bench_sha512(void)
     persec = persec / 1024;
 #endif
 
-    printf("SHA-512  %d %s took %5.3f seconds, %6.2f MB/s\n", numBlocks,
+    printf("SHA-512  %d %s took %5.3f seconds, %7.3f MB/s\n", numBlocks,
                                               blockType, total, persec);
 }
 #endif
@@ -634,7 +747,7 @@ void bench_ripemd(void)
     persec = persec / 1024;
 #endif
 
-    printf("RIPEMD   %d %s took %5.3f seconds, %6.2f MB/s\n", numBlocks,
+    printf("RIPEMD   %d %s took %5.3f seconds, %7.3f MB/s\n", numBlocks,
                                               blockType, total, persec);
 }
 #endif
@@ -646,15 +759,28 @@ void bench_blake2(void)
     Blake2b b2b;
     byte    digest[64];
     double  start, total, persec;
-    int     i;
+    int     i, ret;
        
-    InitBlake2b(&b2b, 64); 
+    ret = InitBlake2b(&b2b, 64);
+    if (ret != 0) {
+        printf("InitBlake2b failed, ret = %d\n", ret);
+        return;
+    }
     start = current_time(1);
     
-    for(i = 0; i < numBlocks; i++)
-        Blake2bUpdate(&b2b, plain, sizeof(plain));
+    for(i = 0; i < numBlocks; i++) {
+        ret = Blake2bUpdate(&b2b, plain, sizeof(plain));
+        if (ret != 0) {
+            printf("Blake2bUpdate failed, ret = %d\n", ret);
+            return;
+        }
+    }
    
-    Blake2bFinal(&b2b, digest, 64);
+    ret = Blake2bFinal(&b2b, digest, 64);
+    if (ret != 0) {
+        printf("Blake2bFinal failed, ret = %d\n", ret);
+        return;
+    }
 
     total = current_time(0) - start;
     persec = 1 / total * numBlocks;
@@ -663,7 +789,7 @@ void bench_blake2(void)
     persec = persec / 1024;
 #endif
 
-    printf("BLAKE2b  %d %s took %5.3f seconds, %6.2f MB/s\n", numBlocks,
+    printf("BLAKE2b  %d %s took %5.3f seconds, %7.3f MB/s\n", numBlocks,
                                               blockType, total, persec);
 }
 #endif
@@ -671,21 +797,20 @@ void bench_blake2(void)
 
 #if !defined(NO_RSA) || !defined(NO_DH) \
                                 || defined(CYASSL_KEYGEN) || defined(HAVE_ECC)
-RNG rng;
+static RNG rng;
 #endif
 
 #ifndef NO_RSA
 
 
-#if !defined(USE_CERT_BUFFERS_1024) && !defined(USE_CERT_BUFFERS_2048) && \
-                                                    defined(CYASSL_MDK_SHELL)
-static char *certRSAname = "certs/rsa2048.der" ;
-void set_Bench_RSA_File(char * cert) { certRSAname = cert ; }   
-                                                 /* set by shell command */
-#elif defined(CYASSL_MDK_SHELL)
-    /* nothing */
-#else
-static const char *certRSAname = "certs/rsa2048.der" ;
+#if !defined(USE_CERT_BUFFERS_1024) && !defined(USE_CERT_BUFFERS_2048)
+    #if defined(CYASSL_MDK_SHELL)
+        static char *certRSAname = "certs/rsa2048.der";
+        /* set by shell command */
+        static void set_Bench_RSA_File(char * cert) { certRSAname = cert ; }
+    #else
+        static const char *certRSAname = "certs/rsa2048.der";
+    #endif
 #endif
 
 void bench_rsa(void)
@@ -733,20 +858,24 @@ void bench_rsa(void)
         printf("InitRNG failed\n");
         return;
     }
-    InitRsaKey(&rsaKey, 0);
+    ret = InitRsaKey(&rsaKey, 0);
+    if (ret < 0) {
+        printf("InitRsaKey failed\n");
+        return;
+    }
     ret = RsaPrivateKeyDecode(tmp, &idx, &rsaKey, (word32)bytes);
     
     start = current_time(1);
 
-    for (i = 0; i < times; i++)
+    for (i = 0; i < ntimes; i++)
         ret = RsaPublicEncrypt(message,len,enc,sizeof(enc), &rsaKey, &rng);
 
     total = current_time(0) - start;
-    each  = total / times;   /* per second   */
+    each  = total / ntimes;   /* per second   */
     milliEach = each * 1000; /* milliseconds */
 
-    printf("RSA %d encryption took %6.2f milliseconds, avg over %d" 
-           " iterations\n", rsaKeySz, milliEach, times);
+    printf("RSA %d encryption took %6.3f milliseconds, avg over %d"
+           " iterations\n", rsaKeySz, milliEach, ntimes);
 
     if (ret < 0) {
         printf("Rsa Public Encrypt failed\n");
@@ -755,17 +884,17 @@ void bench_rsa(void)
 
     start = current_time(1);
 
-    for (i = 0; i < times; i++) {
+    for (i = 0; i < ntimes; i++) {
          byte  out[512];  /* for up to 4096 bit */
          RsaPrivateDecrypt(enc, (word32)ret, out, sizeof(out), &rsaKey);
     }
 
     total = current_time(0) - start;
-    each  = total / times;   /* per second   */
+    each  = total / ntimes;   /* per second   */
     milliEach = each * 1000; /* milliseconds */
 
-    printf("RSA %d decryption took %6.2f milliseconds, avg over %d" 
-           " iterations\n", rsaKeySz, milliEach, times);
+    printf("RSA %d decryption took %6.3f milliseconds, avg over %d"
+           " iterations\n", rsaKeySz, milliEach, ntimes);
 
     FreeRsaKey(&rsaKey);
 #ifdef HAVE_CAVIUM
@@ -778,23 +907,25 @@ void bench_rsa(void)
 #ifndef NO_DH
 
 
-#if !defined(USE_CERT_BUFFERS_1024) && !defined(USE_CERT_BUFFERS_2048) && \
-                                                    defined(CYASSL_MDK_SHELL)
-static char *certDHname = "certs/dh2048.der" ;
-void set_Bench_DH_File(char * cert) { certDHname = cert ; }    
-                                            /* set by shell command */
-#elif defined(CYASSL_MDK_SHELL)
-    /* nothing */
-#else
-static const char *certDHname = "certs/dh2048.der" ;
+#if !defined(USE_CERT_BUFFERS_1024) && !defined(USE_CERT_BUFFERS_2048)
+    #if defined(CYASSL_MDK_SHELL)
+        static char *certDHname = "certs/dh2048.der";
+        /* set by shell command */
+        void set_Bench_DH_File(char * cert) { certDHname = cert ; }
+    #else
+        static const char *certDHname = "certs/dh2048.der";
+    #endif
 #endif
 
 void bench_dh(void)
 {
-    int    i, ret;
+#if !defined(USE_CERT_BUFFERS_1024) && !defined(USE_CERT_BUFFERS_2048)
+    int    ret;
+#endif
+    int    i ;
     byte   tmp[1024];
     size_t bytes;
-    word32 idx = 0, pubSz, privSz, pubSz2, privSz2, agreeSz;
+    word32 idx = 0, pubSz, privSz = 0, pubSz2, privSz2, agreeSz;
 
     byte   pub[256];    /* for 2048 bit */
     byte   priv[256];   /* for 2048 bit */
@@ -843,28 +974,28 @@ void bench_dh(void)
 
     start = current_time(1);
 
-    for (i = 0; i < times; i++)
+    for (i = 0; i < ntimes; i++)
         DhGenerateKeyPair(&dhKey, &rng, priv, &privSz, pub, &pubSz);
 
     total = current_time(0) - start;
-    each  = total / times;   /* per second   */
+    each  = total / ntimes;   /* per second   */
     milliEach = each * 1000; /* milliseconds */
 
-    printf("DH  %d key generation  %6.2f milliseconds, avg over %d" 
-           " iterations\n", dhKeySz, milliEach, times);
+    printf("DH  %d key generation  %6.3f milliseconds, avg over %d"
+           " iterations\n", dhKeySz, milliEach, ntimes);
 
     DhGenerateKeyPair(&dhKey, &rng, priv2, &privSz2, pub2, &pubSz2);
     start = current_time(1);
 
-    for (i = 0; i < times; i++)
+    for (i = 0; i < ntimes; i++)
         DhAgree(&dhKey, agree, &agreeSz, priv, privSz, pub2, pubSz2);
 
     total = current_time(0) - start;
-    each  = total / times;   /* per second   */
+    each  = total / ntimes;   /* per second   */
     milliEach = each * 1000; /* milliseconds */
 
-    printf("DH  %d key agreement   %6.2f milliseconds, avg over %d" 
-           " iterations\n", dhKeySz, milliEach, times);
+    printf("DH  %d key agreement   %6.3f milliseconds, avg over %d"
+           " iterations\n", dhKeySz, milliEach, ntimes);
 
 #if !defined(USE_CERT_BUFFERS_1024) && !defined(USE_CERT_BUFFERS_2048)
     fclose(file);
@@ -879,7 +1010,6 @@ void bench_rsaKeyGen(void)
     RsaKey genKey;
     double start, total, each, milliEach;
     int    i;
-    const int genTimes = 5;
   
     /* 1024 bit */ 
     start = current_time(1);
@@ -894,7 +1024,7 @@ void bench_rsaKeyGen(void)
     each  = total / genTimes;  /* per second  */
     milliEach = each * 1000;   /* millisconds */
     printf("\n");
-    printf("RSA 1024 key generation  %6.2f milliseconds, avg over %d" 
+    printf("RSA 1024 key generation  %6.3f milliseconds, avg over %d"
            " iterations\n", milliEach, genTimes);
 
     /* 2048 bit */
@@ -909,10 +1039,78 @@ void bench_rsaKeyGen(void)
     total = current_time(0) - start;
     each  = total / genTimes;  /* per second  */
     milliEach = each * 1000;   /* millisconds */
-    printf("RSA 2048 key generation  %6.2f milliseconds, avg over %d" 
+    printf("RSA 2048 key generation  %6.3f milliseconds, avg over %d"
            " iterations\n", milliEach, genTimes);
 }
 #endif /* CYASSL_KEY_GEN */
+#ifdef HAVE_NTRU
+byte GetEntropy(ENTROPY_CMD cmd, byte* out);
+
+byte GetEntropy(ENTROPY_CMD cmd, byte* out)
+{
+    if (cmd == INIT)
+        return (InitRng(&rng) == 0) ? 1 : 0;
+
+    if (out == NULL)
+        return 0;
+
+    if (cmd == GET_BYTE_OF_ENTROPY)
+        return (RNG_GenerateBlock(&rng, out, 1) == 0) ? 1 : 0;
+
+    if (cmd == GET_NUM_BYTES_PER_BYTE_OF_ENTROPY) {
+        *out = 1;
+        return 1;
+    }
+
+    return 0;
+}
+void bench_ntruKeyGen(void)
+{
+    double start, total, each, milliEach;
+    int    i;
+
+    byte   public_key[557]; /* 2048 key equivalent to rsa */
+    word16 public_key_len = sizeof(public_key);
+    byte   private_key[607];
+    word16 private_key_len = sizeof(private_key);
+
+    DRBG_HANDLE drbg;
+    static uint8_t const pers_str[] = {
+                'C', 'y', 'a', 'S', 'S', 'L', ' ', 't', 'e', 's', 't'
+    };
+
+    word32 rc = ntru_crypto_drbg_instantiate(112, pers_str, sizeof(pers_str),
+                                             GetEntropy, &drbg);
+    if(rc != DRBG_OK) {
+        printf("NTRU drbg instantiate failed\n");
+        return;
+    }
+
+    start = current_time(1);
+
+    for(i = 0; i < genTimes; i++) {
+        ntru_crypto_ntru_encrypt_keygen(drbg, NTRU_EES401EP2, &public_key_len,
+                                     public_key, &private_key_len, private_key);
+    }
+
+    total = current_time(0) - start;
+
+    rc = ntru_crypto_drbg_uninstantiate(drbg);
+
+    if (rc != NTRU_OK) {
+        printf("NTRU drbg uninstantiate failed\n");
+        return;
+    }
+
+    each = total / genTimes;
+    milliEach = each * 1000;
+
+    printf("\n");
+    printf("NTRU 112 key generation  %6.3f milliseconds, avg over %d"
+        " iterations\n", milliEach, genTimes);
+
+}
+#endif
 
 #ifdef HAVE_ECC 
 void bench_eccKeyGen(void)
@@ -920,7 +1118,6 @@ void bench_eccKeyGen(void)
     ecc_key genKey;
     double start, total, each, milliEach;
     int    i, ret;
-    const int genTimes = 5;
   
     ret = InitRng(&rng);
     if (ret < 0) {
@@ -939,7 +1136,7 @@ void bench_eccKeyGen(void)
     each  = total / genTimes;  /* per second  */
     milliEach = each * 1000;   /* millisconds */
     printf("\n");
-    printf("ECC  256 key generation  %6.2f milliseconds, avg over %d" 
+    printf("ECC  256 key generation  %6.3f milliseconds, avg over %d"
            " iterations\n", milliEach, genTimes);
 }
 
@@ -949,11 +1146,10 @@ void bench_eccKeyAgree(void)
     ecc_key genKey, genKey2;
     double start, total, each, milliEach;
     int    i, ret;
-    const int agreeTimes = 5;
     byte   shared[1024];
     byte   sig[1024];
     byte   digest[32];
-    word32 x;
+    word32 x = 0;
  
     ecc_init(&genKey);
     ecc_init(&genKey2);
@@ -990,12 +1186,12 @@ void bench_eccKeyAgree(void)
     total = current_time(0) - start;
     each  = total / agreeTimes;  /* per second  */
     milliEach = each * 1000;   /* millisconds */
-    printf("EC-DHE   key agreement   %6.2f milliseconds, avg over %d" 
+    printf("EC-DHE   key agreement   %6.3f milliseconds, avg over %d"
            " iterations\n", milliEach, agreeTimes);
 
     /* make dummy digest */
     for (i = 0; i < (int)sizeof(digest); i++)
-        digest[i] = i;
+        digest[i] = (byte)i;
 
 
     start = current_time(1);
@@ -1012,7 +1208,7 @@ void bench_eccKeyAgree(void)
     total = current_time(0) - start;
     each  = total / agreeTimes;  /* per second  */
     milliEach = each * 1000;   /* millisconds */
-    printf("EC-DSA   sign   time     %6.2f milliseconds, avg over %d" 
+    printf("EC-DSA   sign   time     %6.3f milliseconds, avg over %d"
            " iterations\n", milliEach, agreeTimes);
 
     start = current_time(1);
@@ -1029,14 +1225,13 @@ void bench_eccKeyAgree(void)
     total = current_time(0) - start;
     each  = total / agreeTimes;  /* per second  */
     milliEach = each * 1000;     /* millisconds */
-    printf("EC-DSA   verify time     %6.2f milliseconds, avg over %d" 
+    printf("EC-DSA   verify time     %6.3f milliseconds, avg over %d"
            " iterations\n", milliEach, agreeTimes);
 
     ecc_free(&genKey2);
     ecc_free(&genKey);
 }
 #endif /* HAVE_ECC */
-
 
 #ifdef _WIN32
 
@@ -1045,12 +1240,12 @@ void bench_eccKeyAgree(void)
 
     double current_time(int reset)
     {
-        (void)reset;
-
         static int init = 0;
         static LARGE_INTEGER freq;
     
         LARGE_INTEGER count;
+
+        (void)reset;
 
         if (!init) {
             QueryPerformanceFrequency(&freq);
@@ -1063,44 +1258,56 @@ void bench_eccKeyAgree(void)
     }
 
 #elif defined MICROCHIP_PIC32
-
-    #include <peripheral/timer.h>
+    #if defined(CYASSL_MICROCHIP_PIC32MZ)
+        #define CLOCK 80000000.0
+    #else
+        #include <peripheral/timer.h>
+        #define CLOCK 40000000.0
+    #endif
 
     double current_time(int reset)
     {
-        /* NOTE: core timer tick rate = 40 Mhz, 1 tick = 25 ns */
-
         unsigned int ns;
-
-        /* should we reset our timer back to zero? Helps prevent timer
-           rollover */
 
         if (reset) {
             WriteCoreTimer(0);
         }
 
         /* get timer in ns */
-        ns = ReadCoreTimer() * 25;
+        ns = ReadCoreTimer();
 
         /* return seconds as a double */
-        return ( ns / 1000000000.0 );
+        return ( ns / CLOCK * 2.0);
     }
-		
-#elif defined CYASSL_MDK_ARM
-    extern double current_time(int reset) ;
+
+#elif defined(CYASSL_IAR_ARM) || defined (CYASSL_MDK_ARM)
+
+#elif defined FREERTOS
+
+    double current_time(int reset)
+    {
+        (void) reset;
+
+        portTickType tickCount;
+
+        /* tick count == ms, if configTICK_RATE_HZ is set to 1000 */
+        tickCount = xTaskGetTickCount();
+        return (double)tickCount / 1000;
+    }
+
 #else
 
     #include <sys/time.h>
 
     double current_time(int reset)
     {
-        (void) reset;
-
         struct timeval tv;
+
+        (void)reset;
+
         gettimeofday(&tv, 0);
 
         return (double)tv.tv_sec + (double)tv.tv_usec / 1000000;
     }
 
 #endif /* _WIN32 */
-

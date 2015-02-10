@@ -1,6 +1,6 @@
 /* echoserver.c
  *
- * Copyright (C) 2006-2013 wolfSSL Inc.
+ * Copyright (C) 2006-2014 wolfSSL Inc.
  *
  * This file is part of CyaSSL.
  *
@@ -16,7 +16,7 @@
  *
  * You should have received a copy of the GNU General Public License
  * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA
  */
 
 #ifdef HAVE_CONFIG_H
@@ -26,18 +26,18 @@
 #include <cyassl/ctaocrypt/settings.h>
 
 #if defined(CYASSL_MDK_ARM)
-    #include <stdio.h>
-    #include <string.h>
+        #include <stdio.h>
+        #include <string.h>
 
-    #if defined(CYASSL_MDK5)
-        #include "cmsis_os.h"
-        #include "rl_fs.h" 
-        #include "rl_net.h" 
-    #else
-        #include "rtl.h"
-    #endif
+        #if defined(CYASSL_MDK5)
+            #include "cmsis_os.h"
+            #include "rl_fs.h" 
+            #include "rl_net.h" 
+        #else
+            #include "rtl.h"
+        #endif
 
-    #include "cyassl_MDK_ARM.h"
+        #include "cyassl_MDK_ARM.h"
 #endif
 
 #include <cyassl/ssl.h>
@@ -56,7 +56,7 @@
 
 #define SVR_COMMAND_SIZE 256
 
-static void SignalReady(void* args, int port)
+static void SignalReady(void* args, word16 port)
 {
 #if defined(_POSIX_THREADS) && defined(NO_MAIN_DRIVER) && !defined(__MINGW32__)
     /* signal ready to tcp_accept */
@@ -84,7 +84,7 @@ THREAD_RETURN CYASSL_THREAD echoserver_test(void* args)
     int    outCreated = 0;
     int    shutDown = 0;
     int    useAnyAddr = 0;
-    int    port = yasslPort;
+    word16 port = yasslPort;
     int    argc = ((func_args*)args)->argc;
     char** argv = ((func_args*)args)->argv;
 
@@ -133,7 +133,7 @@ THREAD_RETURN CYASSL_THREAD echoserver_test(void* args)
     ctx    = CyaSSL_CTX_new(method);
     /* CyaSSL_CTX_set_session_cache_mode(ctx, SSL_SESS_CACHE_OFF); */
 
-#ifdef OPENSSL_EXTRA
+#if defined(OPENSSL_EXTRA) || defined(HAVE_WEBSERVER)
     CyaSSL_CTX_set_default_passwd_cb(ctx, PasswordCallBack);
 #endif
 
@@ -226,12 +226,10 @@ THREAD_RETURN CYASSL_THREAD echoserver_test(void* args)
 
         ssl = CyaSSL_new(ctx);
         if (ssl == NULL) err_sys("SSL_new failed");
-              CyaSSL_set_quiet_shutdown(ssl, 1) ;
-            
         CyaSSL_set_fd(ssl, clientfd);
-        #if !defined(NO_FILESYSTEM) && defined(OPENSSL_EXTRA)
+        #if !defined(NO_FILESYSTEM) && !defined(NO_DH)
             CyaSSL_SetTmpDH_file(ssl, dhParam, SSL_FILETYPE_PEM);
-        #elif !defined(NO_CERTS)
+        #elif !defined(NO_DH)
             SetDH(ssl);  /* will repick suites with DHE, higher than PSK */
         #endif
         if (CyaSSL_accept(ssl) != SSL_SUCCESS) {
@@ -313,9 +311,7 @@ THREAD_RETURN CYASSL_THREAD echoserver_test(void* args)
         SignalReady(args, port);
 #endif
     }
-#ifdef CYASSL_CMSIS_RTOS
-    osDelay(5000) ;
-#endif
+
     CloseSocket(sockfd);
     CyaSSL_CTX_free(ctx);
 
@@ -351,8 +347,10 @@ THREAD_RETURN CYASSL_THREAD echoserver_test(void* args)
 #if defined(DEBUG_CYASSL) && !defined(CYASSL_MDK_SHELL)
         CyaSSL_Debugging_ON();
 #endif
-        if (CurrentDir("echoserver") || CurrentDir("build"))
+        if (CurrentDir("echoserver"))
             ChangeDirBack(2);
+        else if (CurrentDir("Debug") || CurrentDir("Release"))
+            ChangeDirBack(3);
         echoserver_test(&args);
         CyaSSL_Cleanup();
 

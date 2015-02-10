@@ -1,6 +1,6 @@
 /* client.c
  *
- * Copyright (C) 2006-2013 wolfSSL Inc.
+ * Copyright (C) 2006-2014 wolfSSL Inc.
  *
  * This file is part of CyaSSL.
  *
@@ -16,17 +16,25 @@
  *
  * You should have received a copy of the GNU General Public License
  * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA
  */
 
 #ifdef HAVE_CONFIG_H
-    #include <config.h>
+        #include <config.h>
 #endif
- 
+
 #if defined(CYASSL_MDK_ARM)
-      #include <stdio.h>
+        #include <stdio.h>
         #include <string.h>
-        #include <rtl.h>
+
+        #if defined(CYASSL_MDK5)
+            #include "cmsis_os.h"
+            #include "rl_fs.h" 
+            #include "rl_net.h" 
+        #else
+            #include "rtl.h"
+        #endif
+
         #include "cyassl_MDK_ARM.h"
 #endif
 
@@ -38,6 +46,7 @@
 #endif
 
 #include <cyassl/ssl.h>
+
 #include <cyassl/test.h>
 
 #include "examples/client/client.h"
@@ -47,6 +56,10 @@
     int handShakeCB(HandShakeInfo*);
     int timeoutCB(TimeoutInfo*);
     Timeval timeout;
+#endif
+
+#ifdef HAVE_SESSION_TICKET
+    int sessionTicketCB(CYASSL*, const unsigned char*, int, void*);
 #endif
 
 
@@ -119,12 +132,17 @@ static void Usage(void)
     printf("-s          Use pre Shared keys\n");
     printf("-t          Track CyaSSL memory use\n");
     printf("-d          Disable peer checks\n");
+    printf("-D          Override Date Errors example\n");
     printf("-g          Send server HTTP GET\n");
     printf("-u          Use UDP DTLS,"
            " add -v 2 for DTLSv1 (default), -v 3 for DTLSv1.2\n");
     printf("-m          Match domain name in cert\n");
     printf("-N          Use Non-blocking sockets\n");
     printf("-r          Resume session\n");
+#ifdef HAVE_SECURE_RENEGOTIATION
+    printf("-R          Allow Secure Renegotiation\n");
+    printf("-i          Force client Initiated Secure Renegotiation\n");
+#endif
     printf("-f          Fewer packets/group messages\n");
     printf("-x          Disable client cert/key loading\n");
 #ifdef SHOW_SIZES
@@ -133,7 +151,7 @@ static void Usage(void)
 #ifdef HAVE_SNI
     printf("-S <str>    Use Host Name Indication\n");
 #endif
-#ifdef HAVE_MAXFRAGMENT
+#ifdef HAVE_MAX_FRAGMENT
     printf("-L <num>    Use Maximum Fragment Length [1-5]\n");
 #endif
 #ifdef HAVE_TRUNCATED_HMAC
@@ -149,13 +167,10 @@ static void Usage(void)
 #ifdef HAVE_PK_CALLBACKS 
     printf("-P          Public Key Callbacks\n");
 #endif
-}
-
-
-#ifdef CYASSL_MDK_SHELL
-    #define exit(code) return(code)
+#ifdef HAVE_ANON
+    printf("-a          Anonymous client\n");
 #endif
-
+}
 
 THREAD_RETURN CYASSL_THREAD client_test(void* args)
 {
@@ -175,13 +190,14 @@ THREAD_RETURN CYASSL_THREAD client_test(void* args)
     int  input;
     int  msgSz = (int)strlen(msg);
 
-    int   port   = yasslPort;
+    word16 port   = yasslPort;
     char* host   = (char*)yasslIP;
-    char* domain = (char*)"www.yassl.com";
+    const char* domain = "www.yassl.com";
 
     int    ch;
     int    version = CLIENT_INVALID_VERSION;
     int    usePsk   = 0;
+    int    useAnon  = 0;
     int    sendGET  = 0;
     int    benchmark = 0;
     int    doDTLS    = 0;
@@ -189,15 +205,18 @@ THREAD_RETURN CYASSL_THREAD client_test(void* args)
     int    doPeerCheck = 1;
     int    nonBlocking = 0;
     int    resumeSession = 0;
+    int    scr           = 0;    /* allow secure renegotiation */
+    int    forceScr      = 0;    /* force client initiaed scr */
     int    trackMemory   = 0;
     int    useClientCert = 1;
     int    fewerPackets  = 0;
     int    atomicUser    = 0;
     int    pkCallbacks   = 0;
+    int    overrideDateErrors = 0;
     char*  cipherList = NULL;
-    char*  verifyCert = (char*)caCert;
-    char*  ourCert    = (char*)cliCert;
-    char*  ourKey     = (char*)cliKey;
+    const char* verifyCert = caCert;
+    const char* ourCert    = cliCert;
+    const char* ourKey     = cliKey;
 
 #ifdef HAVE_SNI
     char*  sniHostName = NULL;
@@ -231,11 +250,13 @@ THREAD_RETURN CYASSL_THREAD client_test(void* args)
     (void)trackMemory;
     (void)atomicUser;
     (void)pkCallbacks;
+    (void)scr;
+    (void)forceScr;
 
     StackTrap();
 
     while ((ch = mygetopt(argc, argv,
-                          "?gdusmNrtfxUPh:p:v:l:A:c:k:b:zS:L:ToO:")) != -1) {
+                          "?gdDusmNrRitfxUPh:p:v:l:A:c:k:b:zS:L:ToO:a")) != -1) {
         switch (ch) {
             case '?' :
                 Usage();
@@ -247,6 +268,10 @@ THREAD_RETURN CYASSL_THREAD client_test(void* args)
 
             case 'd' :
                 doPeerCheck = 0;
+                break;
+
+            case 'D' :
+                overrideDateErrors = 1;
                 break;
 
             case 'u' :
@@ -293,7 +318,7 @@ THREAD_RETURN CYASSL_THREAD client_test(void* args)
                 break;
 
             case 'p' :
-                port = atoi(myoptarg);
+                port = (word16)atoi(myoptarg);
                 #if !defined(NO_MAIN_DRIVER) || defined(USE_WINDOWS_API)
                     if (port == 0)
                         err_sys("port number cannot be 0");
@@ -340,6 +365,19 @@ THREAD_RETURN CYASSL_THREAD client_test(void* args)
                 resumeSession = 1;
                 break;
 
+            case 'R' :
+                #ifdef HAVE_SECURE_RENEGOTIATION
+                    scr = 1;
+                #endif
+                break;
+
+            case 'i' :
+                #ifdef HAVE_SECURE_RENEGOTIATION
+                    scr      = 1;
+                    forceScr = 1;
+                #endif
+                break;
+
             case 'z' :
                 #ifndef CYASSL_LEANPSK
                     CyaSSL_GetObjectSize();
@@ -379,6 +417,12 @@ THREAD_RETURN CYASSL_THREAD client_test(void* args)
                 #ifdef HAVE_OCSP
                     useOcsp = 1;
                     ocspUrl = myoptarg;
+                #endif
+                break;
+
+            case 'a' :
+                #ifdef HAVE_ANON
+                    useAnon = 1;
                 #endif
                 break;
 
@@ -490,7 +534,18 @@ THREAD_RETURN CYASSL_THREAD client_test(void* args)
         useClientCert = 0;
     }
 
-#ifdef OPENSSL_EXTRA
+    if (useAnon) {
+#ifdef HAVE_ANON
+        if (cipherList == NULL) {
+            CyaSSL_CTX_allow_anon_cipher(ctx);
+            if (CyaSSL_CTX_set_cipher_list(ctx,"ADH-AES128-SHA") != SSL_SUCCESS)
+                err_sys("client can't set cipher list 4");
+        }
+#endif
+        useClientCert = 0;
+    }
+
+#if defined(OPENSSL_EXTRA) || defined(HAVE_WEBSERVER)
     CyaSSL_CTX_set_default_passwd_cb(ctx, PasswordCallBack);
 #endif
 
@@ -534,14 +589,16 @@ THREAD_RETURN CYASSL_THREAD client_test(void* args)
                     "from CyaSSL home dir");
     }
 
-    if (!usePsk) {
+    if (!usePsk && !useAnon) {
         if (CyaSSL_CTX_load_verify_locations(ctx, verifyCert, 0) != SSL_SUCCESS)
                 err_sys("can't load ca file, Please run from CyaSSL home dir");
     }
 #endif
 #if !defined(NO_CERTS)
-    if (!usePsk && doPeerCheck == 0)
+    if (!usePsk && !useAnon && doPeerCheck == 0)
         CyaSSL_CTX_set_verify(ctx, SSL_VERIFY_NONE, 0);
+    if (!usePsk && !useAnon && overrideDateErrors == 1)
+        CyaSSL_CTX_set_verify(ctx, SSL_VERIFY_PEER, myDateCb);
 #endif
 
 #ifdef HAVE_CAVIUM
@@ -563,6 +620,10 @@ THREAD_RETURN CYASSL_THREAD client_test(void* args)
     if (truncatedHMAC)
         if (CyaSSL_CTX_UseTruncatedHMAC(ctx) != SSL_SUCCESS)
             err_sys("UseTruncatedHMAC failed");
+#endif
+#ifdef HAVE_SESSION_TICKET
+    if (CyaSSL_CTX_UseSessionTicket(ctx) != SSL_SUCCESS)
+        err_sys("UseSessionTicket failed");
 #endif
 
     if (benchmark) {
@@ -602,6 +663,9 @@ THREAD_RETURN CYASSL_THREAD client_test(void* args)
     ssl = CyaSSL_new(ctx);
     if (ssl == NULL)
         err_sys("unable to get SSL object");
+    #ifdef HAVE_SESSION_TICKET
+    CyaSSL_set_SessionTicket_cb(ssl, sessionTicketCB, (void*)"initial session");
+    #endif
     if (doDTLS) {
         SOCKADDR_IN_T addr;
         build_addr(&addr, host, port, 1);
@@ -611,6 +675,15 @@ THREAD_RETURN CYASSL_THREAD client_test(void* args)
     else {
         tcp_connect(&sockfd, host, port, 0);
     }
+
+#ifdef HAVE_POLY1305
+    /* use old poly to connect with google server */
+    if (!XSTRNCMP(domain, "www.google.com", 14)) {
+        if (CyaSSL_use_old_poly(ssl, 1) != 0)
+            err_sys("unable to set to old poly");
+    }
+#endif
+
     CyaSSL_set_fd(ssl, sockfd);
 #ifdef HAVE_CRL
     if (CyaSSL_EnableCRL(ssl, CYASSL_CRL_CHECKALL) != SSL_SUCCESS)
@@ -619,6 +692,12 @@ THREAD_RETURN CYASSL_THREAD client_test(void* args)
         err_sys("can't load crl, check crlfile and date validity");
     if (CyaSSL_SetCRL_Cb(ssl, CRL_CallBack) != SSL_SUCCESS)
         err_sys("can't set crl callback");
+#endif
+#ifdef HAVE_SECURE_RENEGOTIATION
+    if (scr) {
+        if (CyaSSL_UseSecureRenegotiation(ssl) != SSL_SUCCESS)
+            err_sys("can't enable secure renegotiation");
+    }
 #endif
 #ifdef ATOMIC_USER
     if (atomicUser)
@@ -651,6 +730,30 @@ THREAD_RETURN CYASSL_THREAD client_test(void* args)
     NonBlockingSSL_Connect(ssl);  /* will keep retrying on timeout */
 #endif
     showPeer(ssl);
+
+#ifdef HAVE_SECURE_RENEGOTIATION
+    if (scr && forceScr) {
+        if (nonBlocking) {
+            printf("not doing secure renegotiation on example with"
+                   " nonblocking yet");
+        } else {
+            #ifndef NO_SESSION_CACHE
+                if (resumeSession) {
+                    session = CyaSSL_get_session(ssl);
+                    CyaSSL_set_session(ssl, session);
+                    resumeSession = 0;  /* only resume once */
+                }
+            #endif
+            if (CyaSSL_Rehandshake(ssl) != SSL_SUCCESS) {
+                int  err = CyaSSL_get_error(ssl, 0);
+                char buffer[CYASSL_MAX_ERROR_SZ];
+                printf("err = %d, %s\n", err,
+                                CyaSSL_ERR_error_string(err, buffer));
+                err_sys("CyaSSL_Rehandshake failed");
+            }
+        }
+    }
+#endif /* HAVE_SECURE_RENEGOTIATION */
 
     if (sendGET) {
         printf("SSL connect ok, sending GET...\n");
@@ -712,6 +815,8 @@ THREAD_RETURN CYASSL_THREAD client_test(void* args)
             SOCKADDR_IN_T addr;
             #ifdef USE_WINDOWS_API 
                 Sleep(500);
+            #elif defined(CYASSL_TIRTOS)
+                Task_sleep(1);
             #else
                 sleep(1);
             #endif
@@ -724,6 +829,10 @@ THREAD_RETURN CYASSL_THREAD client_test(void* args)
         }
         CyaSSL_set_fd(sslResume, sockfd);
         CyaSSL_set_session(sslResume, session);
+#ifdef HAVE_SESSION_TICKET
+        CyaSSL_set_SessionTicket_cb(sslResume, sessionTicketCB,
+                                    (void*)"resumed session");
+#endif
        
         showPeer(sslResume);
 #ifndef CYASSL_CALLBACKS
@@ -752,6 +861,8 @@ THREAD_RETURN CYASSL_THREAD client_test(void* args)
             /* give server a chance to bounce a message back to client */
             #ifdef USE_WINDOWS_API
                 Sleep(500);
+            #elif defined(CYASSL_TIRTOS)
+                Task_sleep(1);
             #else
                 sleep(1);
             #endif
@@ -781,7 +892,9 @@ THREAD_RETURN CYASSL_THREAD client_test(void* args)
         ShowMemoryTracker();
 #endif /* USE_CYASSL_MEMORY */
 
+#if !defined(CYASSL_TIRTOS)
     return 0;
+#endif
 }
 
 
@@ -844,6 +957,22 @@ THREAD_RETURN CYASSL_THREAD client_test(void* args)
     int timeoutCB(TimeoutInfo* info)
     {
         (void)info;
+        return 0;
+    }
+
+#endif
+
+
+#ifdef HAVE_SESSION_TICKET
+
+    int sessionTicketCB(CYASSL* ssl,
+                        const unsigned char* ticket, int ticketSz,
+                        void* ctx)
+    {
+        (void)ssl;
+        (void)ticket;
+        printf("Session Ticket CB: ticketSz = %d, ctx = %s\n",
+               ticketSz, (char*)ctx);
         return 0;
     }
 

@@ -1,6 +1,6 @@
 /* random.h
  *
- * Copyright (C) 2006-2013 wolfSSL Inc.
+ * Copyright (C) 2006-2014 wolfSSL Inc.
  *
  * This file is part of CyaSSL.
  *
@@ -16,7 +16,7 @@
  *
  * You should have received a copy of the GNU General Public License
  * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA
  */
 
 
@@ -25,11 +25,15 @@
 
 #include <cyassl/ctaocrypt/types.h>
 
-#ifndef NO_RC4
-    #include <cyassl/ctaocrypt/arc4.h>
-#else
+#if defined(HAVE_HASHDRBG) || defined(NO_RC4)
+    #ifdef NO_SHA256
+        #error "Hash DRBG requires SHA-256."
+    #endif /* NO_SHA256 */
+
     #include <cyassl/ctaocrypt/sha256.h>
-#endif
+#else /* HAVE_HASHDRBG || NO_RC4 */
+    #include <cyassl/ctaocrypt/arc4.h>
+#endif /* HAVE_HASHDRBG || NO_RC4 */
 
 #ifdef __cplusplus
     extern "C" {
@@ -64,11 +68,30 @@ int GenerateSeed(OS_Seed* os, byte* seed, word32 sz);
 #define RNG CyaSSL_RNG   /* for avoiding name conflict in "stm32f2xx.h" */
 #endif
 
-#ifndef NO_RC4
+
+#if defined(HAVE_HASHDRBG) || defined(NO_RC4)
+
+
+#define DRBG_SEED_LEN (440/8)
+
+
+struct DRBG; /* Private DRBG state */
+
+
+/* Hash-based Deterministic Random Bit Generator */
+typedef struct RNG {
+    OS_Seed seed;
+    struct DRBG* drbg;
+    byte status;
+} RNG;
+
+
+#else /* HAVE_HASHDRBG || NO_RC4 */
+
 
 #define CYASSL_RNG_CAVIUM_MAGIC 0xBEEF0004
 
-/* secure Random Nnumber Generator */
+/* secure Random Number Generator */
 
 
 typedef struct RNG {
@@ -85,31 +108,42 @@ typedef struct RNG {
     CYASSL_API int  InitRngCavium(RNG*, int);
 #endif
 
-#else /* NO_RC4 */
 
-#define DBRG_SEED_LEN (440/8)
+#endif /* HAVE_HASH_DRBG || NO_RC4 */
 
-
-/* secure Random Nnumber Generator */
-typedef struct RNG {
-    OS_Seed seed;
-
-    Sha256 sha;
-    byte digest[SHA256_DIGEST_SIZE];
-    byte V[DBRG_SEED_LEN];
-    byte C[DBRG_SEED_LEN];
-    word64 reseed_ctr;
-} RNG;
-
-#endif
 
 CYASSL_API int  InitRng(RNG*);
-CYASSL_API void RNG_GenerateBlock(RNG*, byte*, word32 sz);
-CYASSL_API byte RNG_GenerateByte(RNG*);
+CYASSL_API int  RNG_GenerateBlock(RNG*, byte*, word32 sz);
+CYASSL_API int  RNG_GenerateByte(RNG*, byte*);
 
-#ifdef NO_RC4
-    CYASSL_API void FreeRng(RNG*);
-#endif
+
+#if defined(HAVE_HASHDRBG) || defined(NO_RC4)
+    CYASSL_API int FreeRng(RNG*);
+    CYASSL_API int RNG_HealthTest(int reseed,
+                                        const byte* entropyA, word32 entropyASz,
+                                        const byte* entropyB, word32 entropyBSz,
+                                        byte* output, word32 outputSz);
+#endif /* HAVE_HASHDRBG || NO_RC4 */
+
+
+#ifdef HAVE_FIPS
+    /* fips wrapper calls, user can call direct */
+    CYASSL_API int InitRng_fips(RNG* rng);
+    CYASSL_API int FreeRng_fips(RNG* rng);
+    CYASSL_API int RNG_GenerateBlock_fips(RNG* rng, byte* buf, word32 bufSz);
+    CYASSL_API int RNG_HealthTest_fips(int reseed,
+                                        const byte* entropyA, word32 entropyASz,
+                                        const byte* entropyB, word32 entropyBSz,
+                                        byte* output, word32 outputSz);
+    #ifndef FIPS_NO_WRAPPERS
+        /* if not impl or fips.c impl wrapper force fips calls if fips build */
+        #define InitRng              InitRng_fips
+        #define FreeRng              FreeRng_fips
+        #define RNG_GenerateBlock    RNG_GenerateBlock_fips
+        #define RNG_HealthTest       RNG_HealthTest_fips
+    #endif /* FIPS_NO_WRAPPERS */
+#endif /* HAVE_FIPS */
+
 
 #ifdef __cplusplus
     } /* extern "C" */

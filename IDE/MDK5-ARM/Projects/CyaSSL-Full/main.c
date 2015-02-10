@@ -1,6 +1,6 @@
 /* main.c
  *
- * Copyright (C) 2006-2013 wolfSSL Inc.
+ * Copyright (C) 2006-2014 wolfSSL Inc.
  *
  * This file is part of CyaSSL.
  *
@@ -16,7 +16,7 @@
  *
  * You should have received a copy of the GNU General Public License
  * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA
  */
  
 #ifdef HAVE_CONFIG_H
@@ -27,7 +27,9 @@
 #include <cyassl/ctaocrypt/logging.h>
 
 #include "cmsis_os.h"
+#if !defined(NO_FILESYSTEM)
 #include "rl_fs.h" 
+#endif
 #include "rl_net.h" 
 #include <stdio.h>
 #include "cyassl_MDK_ARM.h"
@@ -36,6 +38,7 @@
 /*-----------------------------------------------------------------------------
  *        Initialize a Flash Memory Card
  *----------------------------------------------------------------------------*/
+#if !defined(NO_FILESYSTEM)
 static void init_filesystem (void) {
   int32_t retv;
 
@@ -53,6 +56,7 @@ static void init_filesystem (void) {
     printf ("Drive M0 initialization failed!\n");
   }
 }
+#endif
 
 /*-----------------------------------------------------------------------------
  *        TCP/IP tasks
@@ -79,9 +83,13 @@ char* myoptarg = NULL;
 int main() 
 {
     void *arg = NULL ;
-    init_time() ;
+	
+	#if !defined(NO_FILESYSTEM)
     init_filesystem ();
+	#endif
+	
     net_initialize() ;
+    
     osThreadCreate (osThread (tcp_poll), NULL); 
     osDelay(10000) ;  /* wait for DHCP */
     #if defined(DEBUG_CYASSL)

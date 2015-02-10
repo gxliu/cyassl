@@ -1,6 +1,6 @@
 /* sniffer.c
  *
- * Copyright (C) 2006-2013 wolfSSL Inc.
+ * Copyright (C) 2006-2014 wolfSSL Inc.
  *
  * This file is part of CyaSSL.
  *
@@ -16,7 +16,7 @@
  *
  * You should have received a copy of the GNU General Public License
  * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA
  */
 
 
@@ -44,7 +44,7 @@
 
 #include <cyassl/openssl/ssl.h>
 #include <cyassl/internal.h>
-#include <cyassl/error.h>
+#include <cyassl/error-ssl.h>
 #include <cyassl/sniffer.h>
 #include <cyassl/sniffer_error.h>
 
@@ -58,10 +58,15 @@ static INLINE word32 min(word32 a, word32 b)
 
 #endif
 
+#ifndef CYASSL_SNIFFER_TIMEOUT
+    #define CYASSL_SNIFFER_TIMEOUT 900
+    /* Cache unclosed Sessions for 15 minutes since last used */
+#endif
 
 /* Misc constants */
 enum {
     MAX_SERVER_ADDRESS = 128, /* maximum server address length */
+    MAX_SERVER_NAME    = 128, /* maximum server name length */
     MAX_ERROR_LEN      = 80,  /* maximum error length */
     ETHER_IF_ADDR_LEN  = 6,   /* ethernet interface address length */
     LOCAL_IF_ADDR_LEN  = 4,   /* localhost interface address length, !windows */
@@ -74,7 +79,6 @@ enum {
     HASH_SIZE          = 499, /* Session Hash Table Rows */
     PSEUDO_HDR_SZ      = 12,  /* TCP Pseudo Header size in bytes */
     FATAL_ERROR_STATE  =  1,  /* SnifferSession fatal error state */
-    SNIFFER_TIMEOUT    = 900, /* Cache unclosed Sessions for 15 minutes */
     TICKET_HINT_LEN    = 4,   /* Session Ticket Hint length */
     EXT_TYPE_SZ        = 2,   /* Extension length */
     MAX_INPUT_SZ       = MAX_RECORD_SIZE + COMP_EXTRA + MAX_MSG_EXTRA + 
@@ -224,7 +228,12 @@ static const char* const msgTable[] =
     "Bad Finished Message Processing",
     "Bad Compression Type",
     "Bad DeriveKeys Error",
-    "Saw ACK for Missing Packet Error"
+    "Saw ACK for Missing Packet Error",
+    "Bad Decrypt Operation",
+
+    /* 71 */
+    "Decrypt Keys Not Set Up",
+    "Late Key Load Error"
 };
 
 
@@ -258,12 +267,30 @@ typedef struct PacketBuffer {
 } PacketBuffer;
 
 
+#ifdef HAVE_SNI
+
+/* NamedKey maps a SNI name to a specific private key */
+typedef struct NamedKey {
+    char             name[MAX_SERVER_NAME];      /* server DNS name */
+    word32           nameSz;                     /* size of server DNS name */
+    byte*            key;                        /* DER private key */
+    word32           keySz;                      /* size of DER private key */
+    struct NamedKey* next;                       /* for list */
+} NamedKey;
+
+#endif
+
+
 /* Sniffer Server holds info for each server/port monitored */
 typedef struct SnifferServer {
     SSL_CTX*       ctx;                          /* SSL context */
     char           address[MAX_SERVER_ADDRESS];  /* passed in server address */
     word32         server;                       /* netowrk order address */
     int            port;                         /* server port */
+#ifdef HAVE_SNI
+    NamedKey*      namedKeys;                    /* mapping of names and keys */
+    CyaSSL_Mutex   namedKeysMutex;               /* mutex for namedKey list */
+#endif
     struct SnifferServer* next;                  /* for list */
 } SnifferServer;
 
@@ -333,11 +360,47 @@ void ssl_InitSniffer(void)
 }
 
 
+#ifdef HAVE_SNI
+
+/* Free Named Key and the zero out the private key it holds */
+static void FreeNamedKey(NamedKey* in)
+{
+    if (in) {
+        if (in->key) {
+            XMEMSET(in->key, 0, in->keySz);
+            free(in->key);
+        }
+        free(in);
+    }
+}
+
+
+static void FreeNamedKeyList(NamedKey* in)
+{
+    NamedKey* next;
+
+    while (in) {
+        next = in->next;
+        FreeNamedKey(in);
+        in = next;
+    }
+}
+
+#endif
+
+
 /* Free Sniffer Server's resources/self */
 static void FreeSnifferServer(SnifferServer* srv)
 {
-    if (srv)
+    if (srv) {
+#ifdef HAVE_SNI
+        LockMutex(&srv->namedKeysMutex);
+        FreeNamedKeyList(srv->namedKeys);
+        UnLockMutex(&srv->namedKeysMutex);
+        FreeMutex(&srv->namedKeysMutex);
+#endif
         SSL_CTX_free(srv->ctx);
+    }
     free(srv);
 }
 
@@ -435,6 +498,10 @@ static void InitSnifferServer(SnifferServer* sniffer)
     XMEMSET(sniffer->address, 0, MAX_SERVER_ADDRESS);
     sniffer->server   = 0;
     sniffer->port     = 0;
+#ifdef HAVE_SNI
+    sniffer->namedKeys = 0;
+    InitMutex(&sniffer->namedKeysMutex);
+#endif
     sniffer->next     = 0;
 }
 
@@ -526,8 +593,8 @@ typedef struct TcpPseudoHdr {
 static int SetPassword(char* passwd, int sz, int rw, void* userdata)
 {
     (void)rw;
-    XSTRNCPY(passwd, userdata, sz);
-    return (int)XSTRLEN(userdata);
+    XSTRNCPY(passwd, (const char*)userdata, sz);
+    return (int)XSTRLEN((const char*)userdata);
 }
 
 
@@ -613,6 +680,22 @@ static void TraceSetServer(const char* srv, int port, const char* keyFile)
                                                                     keyFile);
     }
 }
+
+
+#ifdef HAVE_SNI
+
+/* Show Set Named Server info for Trace */
+static void TraceSetNamedServer(const char* name,
+                                 const char* srv, int port, const char* keyFile)
+{
+    if (TraceOn) {
+        fprintf(TraceFile, "\tTrying to install a new Sniffer Server with\n");
+        fprintf(TraceFile, "\tname: %s, server: %s, port: %d, keyFile: %s\n",
+                                                      name, srv, port, keyFile);
+    }
+}
+
+#endif
 
 
 /* Trace got packet number */
@@ -905,58 +988,215 @@ static SnifferSession* GetSnifferSession(IpInfo* ipInfo, TcpInfo* tcpInfo)
 }
 
 
-/* Sets the private key for a specific server and port  */
-/* returns 0 on success, -1 on error */
-int ssl_SetPrivateKey(const char* serverAddress, int port, const char* keyFile,
-                      int typeKey, const char* password, char* error)
+#ifdef HAVE_SNI
+
+static int LoadKeyFile(byte** keyBuf, word32* keyBufSz,
+                const char* keyFile, int typeKey,
+                const char* password)
 {
+    byte* loadBuf;
+    byte* saveBuf;
+    long fileSz = 0;
+    int saveBufSz;
+    XFILE file;
+    int ret;
+
+    if (keyBuf == NULL || keyBufSz == NULL || keyFile == NULL) {
+        return -1;
+    }
+
+    file = XFOPEN(keyFile, "rb");
+    if (file == XBADFILE) return -1;
+    XFSEEK(file, 0, XSEEK_END);
+    fileSz = XFTELL(file);
+    XREWIND(file);
+
+    loadBuf = (byte*)malloc(fileSz);
+    if (loadBuf == NULL) {
+        XFCLOSE(file);
+        return -1;
+    }
+
+    ret = (int)XFREAD(loadBuf, fileSz, 1, file);
+    XFCLOSE(file);
+
+    if (typeKey == SSL_FILETYPE_PEM) {
+        saveBuf = (byte*)malloc(fileSz);
+
+        saveBufSz = CyaSSL_KeyPemToDer(loadBuf, (int)fileSz,
+                                                saveBuf, (int)fileSz, password);
+        free(loadBuf);
+
+        *keyBuf = saveBuf;
+        *keyBufSz = (word32)saveBufSz;
+    }
+    else {
+        *keyBuf = loadBuf;
+        *keyBufSz = (word32)fileSz;
+    }
+
+
+    if (ret < 0) {
+        return -1;
+    }
+
+    return ret;
+}
+
+#endif
+
+
+static int SetNamedPrivateKey(const char* name, const char* address, int port,
+            const char* keyFile, int typeKey, const char* password, char* error)
+{
+    SnifferServer* sniffer;
     int            ret;
     int            type = (typeKey == FILETYPE_PEM) ? SSL_FILETYPE_PEM :
                                                       SSL_FILETYPE_ASN1;
-    SnifferServer* sniffer;
-    
-    TraceHeader();
-    TraceSetServer(serverAddress, port, keyFile);
+    int            isNew = 0;
+    word32         serverIp;
 
-    sniffer = (SnifferServer*)malloc(sizeof(SnifferServer));
+#ifdef HAVE_SNI
+    NamedKey* namedKey = NULL;
+#endif
+
+    (void)name;
+#ifdef HAVE_SNI
+    if (name != NULL) {
+        namedKey = (NamedKey*)malloc(sizeof(NamedKey));
+        if (namedKey == NULL) {
+            SetError(MEMORY_STR, error, NULL, 0);
+            return -1;
+        }
+        XMEMSET(namedKey, 0, sizeof(NamedKey));
+
+        namedKey->nameSz = (word32)strnlen(name, sizeof(namedKey->name));
+        strncpy(namedKey->name, name, sizeof(namedKey->name));
+
+        ret = LoadKeyFile(&namedKey->key, &namedKey->keySz,
+                          keyFile, type, password);
+        if (ret < 0) {
+            SetError(KEY_FILE_STR, error, NULL, 0);
+            FreeNamedKey(namedKey);
+            return -1;
+        }
+    }
+#endif
+
+    serverIp = inet_addr(address);
+    sniffer = ServerList;
+    while (sniffer != NULL &&
+           (sniffer->server != serverIp || sniffer->port != port)) {
+        sniffer = sniffer->next;
+    }
+
     if (sniffer == NULL) {
-        SetError(MEMORY_STR, error, NULL, 0);
-        return -1;
-    }
-    InitSnifferServer(sniffer);
+        isNew = 1;
+        sniffer = (SnifferServer*)malloc(sizeof(SnifferServer));
+        if (sniffer == NULL) {
+            SetError(MEMORY_STR, error, NULL, 0);
+#ifdef HAVE_SNI
+            FreeNamedKey(namedKey);
+#endif
+            return -1;
+        }
+        InitSnifferServer(sniffer);
 
-    XSTRNCPY(sniffer->address, serverAddress, MAX_SERVER_ADDRESS);
-    sniffer->server = inet_addr(sniffer->address);
-    sniffer->port = port;
-    
-    /* start in client mode since SSL_new needs a cert for server */
-    sniffer->ctx = SSL_CTX_new(SSLv3_client_method());
-    if (!sniffer->ctx) {
-        SetError(MEMORY_STR, error, NULL, 0);
-        FreeSnifferServer(sniffer);
-        return -1;
+        XSTRNCPY(sniffer->address, address, MAX_SERVER_ADDRESS-1);
+        sniffer->address[MAX_SERVER_ADDRESS-1] = '\0';
+        sniffer->server = serverIp;
+        sniffer->port = port;
+
+        sniffer->ctx = SSL_CTX_new(SSLv3_client_method());
+        if (!sniffer->ctx) {
+            SetError(MEMORY_STR, error, NULL, 0);
+#ifdef HAVE_SNI
+            FreeNamedKey(namedKey);
+#endif
+            FreeSnifferServer(sniffer);
+            return -1;
+        }
     }
 
-    if (password){
-        SSL_CTX_set_default_passwd_cb(sniffer->ctx, SetPassword);
-        SSL_CTX_set_default_passwd_cb_userdata(sniffer->ctx, (void*)password);
+    if (name == NULL) {
+        if (password) {
+            SSL_CTX_set_default_passwd_cb(sniffer->ctx, SetPassword);
+            SSL_CTX_set_default_passwd_cb_userdata(
+                                                 sniffer->ctx, (void*)password);
+        }
+        ret = SSL_CTX_use_PrivateKey_file(sniffer->ctx, keyFile, type);
+        if (ret != SSL_SUCCESS) {
+            SetError(KEY_FILE_STR, error, NULL, 0);
+            if (isNew)
+                FreeSnifferServer(sniffer);
+            return -1;
+        }
     }
-    ret = SSL_CTX_use_PrivateKey_file(sniffer->ctx, keyFile, type);
-    if (ret != SSL_SUCCESS) {
-        SetError(KEY_FILE_STR, error, NULL, 0);
-        FreeSnifferServer(sniffer);
-        return -1;
+#ifdef HAVE_SNI
+    else {
+        LockMutex(&sniffer->namedKeysMutex);
+        namedKey->next = sniffer->namedKeys;
+        sniffer->namedKeys = namedKey;
+        UnLockMutex(&sniffer->namedKeysMutex);
     }
-    Trace(NEW_SERVER_STR);
-    
-    LockMutex(&ServerListMutex);
-    
-    sniffer->next = ServerList;
-    ServerList = sniffer;
-    
-    UnLockMutex(&ServerListMutex);
-    
+#endif
+
+    if (isNew) {
+        sniffer->next = ServerList;
+        ServerList = sniffer;
+    }
+
     return 0;
+}
+
+
+#ifdef HAVE_SNI
+
+/* Sets the private key for a specific name, server and port  */
+/* returns 0 on success, -1 on error */
+int ssl_SetNamedPrivateKey(const char* name,
+                           const char* address, int port,
+                           const char* keyFile, int typeKey,
+                           const char* password, char* error)
+{
+    int ret;
+
+    TraceHeader();
+    TraceSetNamedServer(name, address, port, keyFile);
+
+    LockMutex(&ServerListMutex);
+    ret = SetNamedPrivateKey(name, address, port, keyFile,
+                             typeKey, password, error);
+    UnLockMutex(&ServerListMutex);
+
+    if (ret == 0)
+        Trace(NEW_SERVER_STR);
+
+    return ret;
+}
+
+#endif
+
+
+/* Sets the private key for a specific server and port  */
+/* returns 0 on success, -1 on error */
+int ssl_SetPrivateKey(const char* address, int port, const char* keyFile,
+                      int typeKey, const char* password, char* error)
+{
+    int ret;
+
+    TraceHeader();
+    TraceSetServer(address, port, keyFile);
+
+    LockMutex(&ServerListMutex);
+    ret = SetNamedPrivateKey(NULL, address, port, keyFile,
+                             typeKey, password, error);
+    UnLockMutex(&ServerListMutex);
+
+    if (ret == 0)
+        Trace(NEW_SERVER_STR);
+
+    return ret;
 }
 
 
@@ -1043,10 +1283,10 @@ static int ProcessClientKeyExchange(const byte* input, int* sslBytes,
     RsaKey key;
     int    ret;
 
-    InitRsaKey(&key, 0);
-   
-    ret = RsaPrivateKeyDecode(session->context->ctx->privateKey.buffer,
-                          &idx, &key, session->context->ctx->privateKey.length);
+    ret = InitRsaKey(&key, 0);
+    if (ret == 0) 
+        ret = RsaPrivateKeyDecode(session->sslServer->buffers.key.buffer,
+                          &idx, &key, session->sslServer->buffers.key.length);
     if (ret == 0) {
         int length = RsaEncryptSize(&key);
         
@@ -1102,8 +1342,16 @@ static int ProcessClientKeyExchange(const byte* input, int* sslBytes,
         return -1;
     }
 
-    MakeMasterSecret(session->sslServer);
-    MakeMasterSecret(session->sslClient);
+    ret  = MakeMasterSecret(session->sslServer);
+    ret += MakeMasterSecret(session->sslClient);
+    ret += SetKeysSide(session->sslServer, ENCRYPT_AND_DECRYPT_SIDE);
+    ret += SetKeysSide(session->sslClient, ENCRYPT_AND_DECRYPT_SIDE);
+
+    if (ret != 0) {
+        SetError(BAD_DERIVE_STR, error, session, FATAL_ERROR_STATE);
+        return -1;
+    }
+
 #ifdef SHOW_SECRETS
     {
         int i;
@@ -1142,7 +1390,7 @@ static int ProcessSessionTicket(const byte* input, int* sslBytes,
     input     += TICKET_HINT_LEN;  /* skip over hint */
     *sslBytes -= TICKET_HINT_LEN;
 
-    len = (input[0] << 8) | input[1];
+    len = (word16)((input[0] << 8) | input[1]);
     input     += LENGTH_SZ;
     *sslBytes -= LENGTH_SZ;
 
@@ -1236,8 +1484,10 @@ static int ProcessServerHello(const byte* input, int* sslBytes,
         doResume = 1;
 
     if (session->ticketID && doResume) {
-        /* use ticketID to retrieve from session */
+        /* use ticketID to retrieve from session, prefer over sessionID */
         XMEMCPY(session->sslServer->arrays->sessionID,session->ticketID,ID_LEN);
+        session->sslServer->options.haveSessionId = 1;  /* may not have
+                                                           actual sessionID */
     }
 
     if (doResume ) {
@@ -1272,6 +1522,9 @@ static int ProcessServerHello(const byte* input, int* sslBytes,
             ret =  DeriveKeys(session->sslServer);
             ret += DeriveKeys(session->sslClient);
         }
+        ret += SetKeysSide(session->sslServer, ENCRYPT_AND_DECRYPT_SIDE);
+        ret += SetKeysSide(session->sslClient, ENCRYPT_AND_DECRYPT_SIDE);
+
         if (ret != 0) {
             SetError(BAD_DERIVE_STR, error, session, FATAL_ERROR_STATE);
             return -1;
@@ -1300,6 +1553,44 @@ static int ProcessClientHello(const byte* input, int* sslBytes,
     word16 len;
     int    toRead = VERSION_SZ + RAN_LEN + ENUM_LEN;
     
+#ifdef HAVE_SNI
+    {
+        byte name[MAX_SERVER_NAME];
+        word32 nameSz = sizeof(name);
+        int ret;
+
+        ret = CyaSSL_SNI_GetFromBuffer(
+                             input - HANDSHAKE_HEADER_SZ - RECORD_HEADER_SZ,
+                             *sslBytes + HANDSHAKE_HEADER_SZ + RECORD_HEADER_SZ,
+                             CYASSL_SNI_HOST_NAME, name, &nameSz);
+
+        if (ret == SSL_SUCCESS) {
+            NamedKey* namedKey;
+
+            name[nameSz] = 0;
+            LockMutex(&session->context->namedKeysMutex);
+            namedKey = session->context->namedKeys;
+            while (namedKey != NULL) {
+                if (nameSz == namedKey->nameSz &&
+                           XSTRNCMP((char*)name, namedKey->name, nameSz) == 0) {
+                    if (CyaSSL_use_PrivateKey_buffer(session->sslServer,
+                                            namedKey->key, namedKey->keySz,
+                                            SSL_FILETYPE_ASN1) != SSL_SUCCESS) {
+                        UnLockMutex(&session->context->namedKeysMutex);
+                        SetError(CLIENT_HELLO_LATE_KEY_STR, error, session,
+                                                             FATAL_ERROR_STATE);
+                        return -1;
+                    }
+                    break;
+                }
+                else
+                    namedKey = namedKey->next;
+            }
+            UnLockMutex(&session->context->namedKeysMutex);
+        }
+    }
+#endif
+
     session->flags.clientHello = 1;  /* don't process again */
     
     /* make sure can read up to session len */
@@ -1349,7 +1640,7 @@ static int ProcessClientHello(const byte* input, int* sslBytes,
         SetError(CLIENT_HELLO_INPUT_STR, error, session, FATAL_ERROR_STATE);
         return -1;
     }
-    len = (input[0] << 8) | input[1];
+    len = (word16)((input[0] << 8) | input[1]);
     input     += SUITE_LEN;
     *sslBytes -= SUITE_LEN;
     /* make sure can read suites + comp len */
@@ -1382,7 +1673,7 @@ static int ProcessClientHello(const byte* input, int* sslBytes,
         SetError(CLIENT_HELLO_INPUT_STR, error, session, FATAL_ERROR_STATE);
         return -1;
     }
-    len = (input[0] << 8) | input[1];
+    len = (word16)((input[0] << 8) | input[1]);
     input     += SUITE_LEN;
     *sslBytes -= SUITE_LEN;
     /* make sure can read through all extensions */
@@ -1400,7 +1691,7 @@ static int ProcessClientHello(const byte* input, int* sslBytes,
         input     += EXT_TYPE_SZ;
         *sslBytes -= EXT_TYPE_SZ;
 
-        extLen = (input[0] << 8) | input[1];
+        extLen = (word16)((input[0] << 8) | input[1]);
         input     += LENGTH_SZ;
         *sslBytes -= LENGTH_SZ;
 
@@ -1442,7 +1733,7 @@ static int ProcessClientHello(const byte* input, int* sslBytes,
 
 
 /* Process Finished */
-static int ProcessFinished(const byte* input, int* sslBytes, 
+static int ProcessFinished(const byte* input, int size, int* sslBytes,
                            SnifferSession* session, char* error)
 {
     SSL*   ssl;
@@ -1453,7 +1744,9 @@ static int ProcessFinished(const byte* input, int* sslBytes,
         ssl = session->sslServer;
     else
         ssl = session->sslClient;
-    ret = DoFinished(ssl, input, &inOutIdx, SNIFF);
+
+    ret = DoFinished(ssl, input, &inOutIdx, (word32) size, (word32) *sslBytes,
+                                                                         SNIFF);
     *sslBytes -= (int)inOutIdx;
 
     if (ret < 0) {
@@ -1483,7 +1776,8 @@ static int DoHandShake(const byte* input, int* sslBytes,
     byte type;
     int  size;
     int  ret = 0;
-    
+    int  startBytes;
+
     if (*sslBytes < HANDSHAKE_HEADER_SZ) {
         SetError(HANDSHAKE_INPUT_STR, error, session, FATAL_ERROR_STATE);
         return -1;
@@ -1493,7 +1787,8 @@ static int DoHandShake(const byte* input, int* sslBytes,
     
     input     += HANDSHAKE_HEADER_SZ;
     *sslBytes -= HANDSHAKE_HEADER_SZ;
-    
+    startBytes = *sslBytes;
+
     if (*sslBytes < size) {
         SetError(HANDSHAKE_INPUT_STR, error, session, FATAL_ERROR_STATE);
         return -1;
@@ -1531,7 +1826,7 @@ static int DoHandShake(const byte* input, int* sslBytes,
             break;
         case finished:
             Trace(GOT_FINISHED_STR);
-            ret = ProcessFinished(input, sslBytes, session, error);
+            ret = ProcessFinished(input, size, sslBytes, session, error);
             break;
         case client_hello:
             Trace(GOT_CLIENT_HELLO_STR);
@@ -1547,15 +1842,19 @@ static int DoHandShake(const byte* input, int* sslBytes,
         default:
             SetError(GOT_UNKNOWN_HANDSHAKE_STR, error, session, 0);
             return -1;
-    }   
+    }
+
+    *sslBytes = startBytes - size;  /* actual bytes of full process */
 
     return ret;
 }
 
 
-/* Decrypt input into plain output */
-static void Decrypt(SSL* ssl, byte* output, const byte* input, word32 sz)
+/* Decrypt input into plain output, 0 on success */
+static int Decrypt(SSL* ssl, byte* output, const byte* input, word32 sz)
 {
+    int ret = 0;
+
     switch (ssl->specs.bulk_cipher_algorithm) {
         #ifdef BUILD_ARC4
         case cyassl_rc4:
@@ -1565,13 +1864,13 @@ static void Decrypt(SSL* ssl, byte* output, const byte* input, word32 sz)
             
         #ifdef BUILD_DES3
         case cyassl_triple_des:
-            Des3_CbcDecrypt(ssl->decrypt.des3, output, input, sz);
+            ret = Des3_CbcDecrypt(ssl->decrypt.des3, output, input, sz);
             break;
         #endif
             
         #ifdef BUILD_AES
         case cyassl_aes:
-            AesCbcDecrypt(ssl->decrypt.aes, output, input, sz);
+            ret = AesCbcDecrypt(ssl->decrypt.aes, output, input, sz);
             break;
         #endif
             
@@ -1595,22 +1894,30 @@ static void Decrypt(SSL* ssl, byte* output, const byte* input, word32 sz)
 
         default:
             Trace(BAD_DECRYPT_TYPE);
+            ret = -1;
             break;
     }
+
+    return ret;
 }
 
 
 /* Decrypt input message into output, adjust output steam if needed */
 static const byte* DecryptMessage(SSL* ssl, const byte* input, word32 sz,
-                                  byte* output)
+                                  byte* output, int* error, int* advance)
 {
     int ivExtra = 0;
 
-    Decrypt(ssl, output, input, sz);
+    int ret = Decrypt(ssl, output, input, sz);
+    if (ret != 0) {
+        *error = ret;
+        return NULL;
+    }
     ssl->keys.encryptSz = sz;
     if (ssl->options.tls1_1 && ssl->specs.cipher_type == block) {
         output += ssl->specs.block_size;     /* go past TLSv1.1 IV */
         ivExtra = ssl->specs.block_size;
+        *advance = ssl->specs.block_size;
     }
 
     ssl->keys.padSz = ssl->specs.hash_size;
@@ -1673,7 +1980,7 @@ static void RemoveStaleSessions(void)
         session = SessionTable[i];
         while (session) {
             SnifferSession* next = session->next; 
-            if (time(NULL) >= session->lastUsed + SNIFFER_TIMEOUT) {
+            if (time(NULL) >= session->lastUsed + CYASSL_SNIFFER_TIMEOUT) {
                 TraceStaleSession();
                 RemoveSession(session, NULL, NULL, i);
             }
@@ -1700,8 +2007,8 @@ static SnifferSession* CreateSession(IpInfo* ipInfo, TcpInfo* tcpInfo,
     InitSession(session);
     session->server  = ipInfo->dst;
     session->client  = ipInfo->src;
-    session->srvPort = tcpInfo->dstPort;
-    session->cliPort = tcpInfo->srcPort;
+    session->srvPort = (word16)tcpInfo->dstPort;
+    session->cliPort = (word16)tcpInfo->srcPort;
     session->cliSeqStart = tcpInfo->sequence;
     session->cliExpected = 1;  /* relative */
     session->lastUsed= time(NULL);
@@ -1759,6 +2066,8 @@ static SnifferSession* CreateSession(IpInfo* ipInfo, TcpInfo* tcpInfo,
 }
 
 
+#ifdef OLD_HELLO_ALLOWED
+
 /* Process Old Client Hello Input */
 static int DoOldHello(SnifferSession* session, const byte* sslFrame,
                       int* rhSize, int* sslBytes, char* error)
@@ -1781,7 +2090,7 @@ static int DoOldHello(SnifferSession* session, const byte* sslFrame,
     }
 
     ret = ProcessOldClientHello(session->sslServer, input, &idx, *sslBytes,
-                                *rhSize);    
+                                (word16)*rhSize);    
     if (ret < 0 && ret != MATCH_SUITE_ERROR) {
         SetError(BAD_OLD_CLIENT_STR, error, session, FATAL_ERROR_STATE);
         return -1;
@@ -1794,6 +2103,8 @@ static int DoOldHello(SnifferSession* session, const byte* sslFrame,
     *sslBytes -= *rhSize;
     return 0;
 }
+
+#endif /* OLD_HELLO_ALLOWED */
 
 
 #if 0
@@ -2231,16 +2542,28 @@ static int CheckPreRecord(IpInfo* ipInfo, TcpInfo* tcpInfo,
         *sslFrame = ssl->buffers.inputBuffer.buffer;
         *end = *sslFrame + *sslBytes;
     }
-    
+
     if ((*session)->flags.clientHello == 0 && **sslFrame != handshake) {
-        int rhSize;
+        /* Sanity check the packet for an old style client hello. */
+        int rhSize = (((*sslFrame)[0] & 0x7f) << 8) | ((*sslFrame)[1]);
+
+        if ((rhSize <= (*sslBytes - 2)) &&
+            (*sslFrame)[2] == OLD_HELLO_ID && (*sslFrame)[3] == SSLv3_MAJOR) {
+#ifdef OLD_HELLO_ALLOWED
         int ret = DoOldHello(*session, *sslFrame, &rhSize, sslBytes, error);
         if (ret < 0)
             return -1;  /* error already set */
         if (*sslBytes <= 0)
             return 1;
+#endif
+        }
+        else {
+#ifdef STARTTLS_ALLOWED
+            return 1;
+#endif
+        }
     }
-    
+
     return 0;
 }
 
@@ -2312,12 +2635,15 @@ static int ProcessMessage(const byte* sslFrame, SnifferSession* session,
                           int sslBytes, byte* data, const byte* end,char* error)
 {
     const byte*       sslBegin = sslFrame;
-    const byte*       tmp;
+    const byte*       recordEnd;   /* end of record indicator */
+    const byte*       inRecordEnd; /* indictor from input stream not decrypt */
     RecordLayerHeader rh;
     int               rhSize = 0;
     int               ret;
+    int               errCode = 0;
     int               decoded = 0;      /* bytes stored for user in data */
     int               notEnough;        /* notEnough bytes yet flag */
+    int               decrypted = 0;    /* was current msg decrypted */
     SSL*              ssl = (session->flags.side == CYASSL_SERVER_END) ?
                                         session->sslServer : session->sslClient;
 doMessage:
@@ -2347,7 +2673,7 @@ doMessage:
                     return -1;
                 }
             }
-            XMEMCPY(ssl->buffers.inputBuffer.buffer, sslFrame, sslBytes);
+            XMEMMOVE(ssl->buffers.inputBuffer.buffer, sslFrame, sslBytes);
             ssl->buffers.inputBuffer.length = sslBytes;
         }
         if (HaveMoreInput(session, &sslFrame, &sslBytes, &end, error))
@@ -2356,29 +2682,57 @@ doMessage:
     }
     sslFrame += RECORD_HEADER_SZ;
     sslBytes -= RECORD_HEADER_SZ;
-    tmp = sslFrame + rhSize;   /* may have more than one record to process */
+    recordEnd = sslFrame + rhSize;   /* may have more than one record */
+    inRecordEnd = recordEnd;
     
     /* decrypt if needed */
     if ((session->flags.side == CYASSL_SERVER_END &&
                                                session->flags.serverCipherOn)
      || (session->flags.side == CYASSL_CLIENT_END &&
                                                session->flags.clientCipherOn)) {
+        int ivAdvance = 0;  /* TLSv1.1 advance amount */
+        if (ssl->decrypt.setup != 1) {
+            SetError(DECRYPT_KEYS_NOT_SETUP, error, session, FATAL_ERROR_STATE);
+            return -1;
+        }
         if (CheckAvailableSize(ssl, rhSize) < 0) {
             SetError(MEMORY_STR, error, session, FATAL_ERROR_STATE);
             return -1;
         }
         sslFrame = DecryptMessage(ssl, sslFrame, rhSize,
-                                  ssl->buffers.outputBuffer.buffer);
+                                  ssl->buffers.outputBuffer.buffer, &errCode,
+                                  &ivAdvance);
+        recordEnd = sslFrame - ivAdvance + rhSize;  /* sslFrame moved so
+                                                       should recordEnd */
+        decrypted = 1;
+        if (errCode != 0) {
+            SetError(BAD_DECRYPT, error, session, FATAL_ERROR_STATE);
+            return -1;
+        }
     }
+
+doPart:
             
     switch ((enum ContentType)rh.type) {
         case handshake:
-            Trace(GOT_HANDSHAKE_STR);
-            ret = DoHandShake(sslFrame, &sslBytes, session, error);
-            if (ret != 0) {
-                if (session->flags.fatalError == 0)
-                    SetError(BAD_HANDSHAKE_STR,error,session,FATAL_ERROR_STATE);
-                return -1;
+            {
+                int startIdx = sslBytes;
+                int used;
+
+                Trace(GOT_HANDSHAKE_STR);
+                ret = DoHandShake(sslFrame, &sslBytes, session, error);
+                if (ret != 0) {
+                    if (session->flags.fatalError == 0)
+                        SetError(BAD_HANDSHAKE_STR, error, session,
+                                 FATAL_ERROR_STATE);
+                    return -1;
+                }
+
+                /* DoHandShake now fully decrements sslBytes to remaining */
+                used = startIdx - sslBytes;
+                sslFrame += used;
+                if (decrypted)
+                    sslFrame += ssl->keys.padSz;
             }
             break;
         case change_cipher_spec:
@@ -2388,6 +2742,11 @@ doMessage:
                 session->flags.clientCipherOn = 1;
             Trace(GOT_CHANGE_CIPHER_STR);
             ssl->options.handShakeState = HANDSHAKE_DONE;
+            ssl->options.handShakeDone  = 1;
+
+            sslFrame += 1;
+            sslBytes -= 1;
+
             break;
         case application_data:
             Trace(GOT_APP_DATA_STR);
@@ -2412,21 +2771,36 @@ doMessage:
                 }
                 if (ssl->buffers.outputBuffer.dynamicFlag)
                     ShrinkOutputBuffer(ssl);
+
+                sslFrame += inOutIdx;
+                sslBytes -= inOutIdx;
             }
             break;
         case alert:
             Trace(GOT_ALERT_STR);
+            sslFrame += rhSize;
+            sslBytes -= rhSize;
             break;
         case no_type:
         default:
             SetError(GOT_UNKNOWN_RECORD_STR, error, session, FATAL_ERROR_STATE);
             return -1;
     }
-    
-    if (tmp < end) {
+
+    /* do we have another msg in record ? */
+    if (sslFrame < recordEnd) {
         Trace(ANOTHER_MSG_STR);
-        sslFrame = tmp;
-        sslBytes = (int)(end - tmp);
+        goto doPart;
+    }
+
+    /* back to input stream instead of potential decrypt buffer */
+    recordEnd = inRecordEnd;
+
+    /* do we have more records ? */
+    if (recordEnd < end) {
+        Trace(ANOTHER_MSG_STR);
+        sslFrame = recordEnd;
+        sslBytes = (int)(end - recordEnd);
         goto doMessage;
     }
     

@@ -1,6 +1,6 @@
 /* io.c
  *
- * Copyright (C) 2006-2013 wolfSSL Inc.
+ * Copyright (C) 2006-2014 wolfSSL Inc.
  *
  * This file is part of CyaSSL.
  *
@@ -16,7 +16,7 @@
  *
  * You should have received a copy of the GNU General Public License
  * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA
  */
 
 #ifdef HAVE_CONFIG_H
@@ -31,7 +31,7 @@
 #endif
 
 #include <cyassl/internal.h>
-#include <cyassl/error.h>
+#include <cyassl/error-ssl.h>
 
 /* if user writes own I/O callbacks they can define CYASSL_USER_IO to remove
    automatic setting of default I/O functions EmbedSend() and EmbedReceive()
@@ -69,6 +69,10 @@
         #define RNG CyaSSL_RNG 
         /* for avoiding name conflict in "stm32f2xx.h" */
         static int errno;
+    #elif defined(CYASSL_TIRTOS)
+        #include <sys/socket.h>
+    #elif defined(CYASSL_IAR_ARM)
+        /* nothing */
     #else
         #include <sys/types.h>
         #include <errno.h>
@@ -76,7 +80,8 @@
             #include <unistd.h>
         #endif
         #include <fcntl.h>
-        #if !(defined(DEVKITPRO) || defined(HAVE_RTP_SYS) || defined(EBSNET))
+        #if !(defined(DEVKITPRO) || defined(HAVE_RTP_SYS) || defined(EBSNET)) \
+            || defined(CYASSL_PICOTCP)
             #include <sys/socket.h>
             #include <arpa/inet.h>
             #include <netinet/in.h>
@@ -149,6 +154,14 @@
         #define SOCKET_ECONNREFUSED SCK_ERROR
         #define SOCKET_ECONNABORTED SCK_ERROR
     #endif
+#elif defined(CYASSL_PICOTCP)
+    #define SOCKET_EWOULDBLOCK  PICO_ERR_EAGAIN
+    #define SOCKET_EAGAIN       PICO_ERR_EAGAIN
+    #define SOCKET_ECONNRESET   PICO_ERR_ECONNRESET
+    #define SOCKET_EINTR        PICO_ERR_EINTR
+    #define SOCKET_EPIPE        PICO_ERR_EIO
+    #define SOCKET_ECONNREFUSED PICO_ERR_ECONNREFUSED
+    #define SOCKET_ECONNABORTED PICO_ERR_ESHUTDOWN
 #else
     #define SOCKET_EWOULDBLOCK EWOULDBLOCK
     #define SOCKET_EAGAIN      EAGAIN
@@ -169,6 +182,9 @@
 #elif defined(CYASSL_LWIP)
     #define SEND_FUNCTION lwip_send
     #define RECV_FUNCTION lwip_recv
+#elif defined(CYASSL_PICOTCP)
+    #define SEND_FUNCTION pico_send
+    #define RECV_FUNCTION pico_recv
 #else
     #define SEND_FUNCTION send
     #define RECV_FUNCTION recv
@@ -434,7 +450,8 @@ int EmbedSendTo(CYASSL* ssl, char *buf, int sz, void *ctx)
     CYASSL_ENTER("EmbedSendTo()");
 
     sent = (int)SENDTO_FUNCTION(sd, &buf[sz - len], len, ssl->wflags,
-                                dtlsCtx->peer.sa, dtlsCtx->peer.sz);
+                                (const struct sockaddr*)dtlsCtx->peer.sa,
+                                dtlsCtx->peer.sz);
     if (sent < 0) {
         err = LastError();
         CYASSL_MSG("Embed Send To error");
@@ -473,8 +490,8 @@ int EmbedGenerateCookie(CYASSL* ssl, byte *buf, int sz, void *ctx)
     int sd = ssl->wfd;
     struct sockaddr_storage peer;
     XSOCKLENT peerSz = sizeof(peer);
-    Sha sha;
     byte digest[SHA_DIGEST_SIZE];
+    int  ret = 0;
 
     (void)ctx;
 
@@ -483,10 +500,10 @@ int EmbedGenerateCookie(CYASSL* ssl, byte *buf, int sz, void *ctx)
         CYASSL_MSG("getpeername failed in EmbedGenerateCookie");
         return GEN_COOKIE_E;
     }
-    
-    InitSha(&sha);
-    ShaUpdate(&sha, (byte*)&peer, peerSz);
-    ShaFinal(&sha, digest);
+
+    ret = ShaHash((byte*)&peer, peerSz, digest);
+    if (ret != 0)
+        return ret;
 
     if (sz > SHA_DIGEST_SIZE)
         sz = SHA_DIGEST_SIZE;
@@ -500,6 +517,38 @@ int EmbedGenerateCookie(CYASSL* ssl, byte *buf, int sz, void *ctx)
 #ifdef HAVE_OCSP
 
 
+static int Word16ToString(char* d, word16 number)
+{
+    int i = 0;
+
+    if (d != NULL) {
+        word16 order = 10000;
+        word16 digit;
+
+        if (number == 0) {
+            d[i++] = '0';
+        }
+        else {
+            while (order) {
+                digit = number / order;
+                if (i > 0 || digit != 0) {
+                    d[i++] = (char)digit + '0';
+                }
+                if (digit != 0)
+                    number %= digit * order;
+                if (order > 1)
+                    order /= 10;
+                else
+                    order = 0;
+            }
+        }
+        d[i] = 0;
+    }
+
+    return i;
+}
+
+
 static int tcp_connect(SOCKET_T* sockfd, const char* ip, word16 port)
 {
     struct sockaddr_storage addr;
@@ -510,15 +559,17 @@ static int tcp_connect(SOCKET_T* sockfd, const char* ip, word16 port)
     {
         struct addrinfo hints;
         struct addrinfo* answer = NULL;
-        char strPort[8];
+        char strPort[6];
 
         XMEMSET(&hints, 0, sizeof(hints));
         hints.ai_family = AF_UNSPEC;
         hints.ai_socktype = SOCK_STREAM;
         hints.ai_protocol = IPPROTO_TCP;
 
-        XSNPRINTF(strPort, sizeof(strPort), "%d", port);
-        strPort[7] = '\0';
+        if (Word16ToString(strPort, port) == 0) {
+            CYASSL_MSG("invalid port number for OCSP responder");
+            return -1;
+        }
 
         if (getaddrinfo(ip, strPort, &hints, &answer) < 0 || answer == NULL) {
             CYASSL_MSG("no addr info for OCSP responder");
@@ -549,10 +600,18 @@ static int tcp_connect(SOCKET_T* sockfd, const char* ip, word16 port)
     #endif /* HAVE_GETADDRINFO */
 
     *sockfd = socket(addr.ss_family, SOCK_STREAM, 0);
-    if (*sockfd < 0) {
+
+#ifdef USE_WINDOWS_API
+    if (*sockfd == INVALID_SOCKET) {
         CYASSL_MSG("bad socket fd, out of fds?");
         return -1;
     }
+#else
+     if (*sockfd < 0) {
+         CYASSL_MSG("bad socket fd, out of fds?");
+         return -1;
+     }
+#endif
 
     if (connect(*sockfd, (struct sockaddr *)&addr, sockaddr_len) != 0) {
         CYASSL_MSG("OCSP responder tcp connect failed");
@@ -566,13 +625,33 @@ static int tcp_connect(SOCKET_T* sockfd, const char* ip, word16 port)
 static int build_http_request(const char* domainName, const char* path,
                                     int ocspReqSz, byte* buf, int bufSize)
 {
-    return XSNPRINTF((char*)buf, bufSize,
-        "POST %s HTTP/1.1\r\n"
-        "Host: %s\r\n"
-        "Content-Length: %d\r\n"
-        "Content-Type: application/ocsp-request\r\n"
-        "\r\n", 
-        path, domainName, ocspReqSz);
+    word32 domainNameLen, pathLen, ocspReqSzStrLen, completeLen;
+    char ocspReqSzStr[6];
+
+    domainNameLen = (word32)XSTRLEN(domainName);
+    pathLen = (word32)XSTRLEN(path);
+    ocspReqSzStrLen = Word16ToString(ocspReqSzStr, (word16)ocspReqSz);
+
+    completeLen = domainNameLen + pathLen + ocspReqSzStrLen + 84;
+    if (completeLen > (word32)bufSize)
+        return 0;
+
+    XSTRNCPY((char*)buf, "POST ", 5);
+    buf += 5;
+    XSTRNCPY((char*)buf, path, pathLen);
+    buf += pathLen;
+    XSTRNCPY((char*)buf, " HTTP/1.1\r\nHost: ", 17);
+    buf += 17;
+    XSTRNCPY((char*)buf, domainName, domainNameLen);
+    buf += domainNameLen;
+    XSTRNCPY((char*)buf, "\r\nContent-Length: ", 18);
+    buf += 18;
+    XSTRNCPY((char*)buf, ocspReqSzStr, ocspReqSzStrLen);
+    buf += ocspReqSzStrLen;
+    XSTRNCPY((char*)buf,
+                      "\r\nContent-Type: application/ocsp-request\r\n\r\n", 44);
+
+    return completeLen;
 }
 
 
@@ -749,7 +828,7 @@ static int process_http_response(int sfd, byte** respBuf,
         }
     } while (state != phr_http_end);
 
-    recvBuf = XMALLOC(recvBufSz, NULL, DYNAMIC_TYPE_IN_BUFFER);
+    recvBuf = (byte*)XMALLOC(recvBufSz, NULL, DYNAMIC_TYPE_IN_BUFFER);
     if (recvBuf == NULL) {
         CYASSL_MSG("process_http_response couldn't create response buffer");
         return -1;
@@ -780,68 +859,81 @@ static int process_http_response(int sfd, byte** respBuf,
 int EmbedOcspLookup(void* ctx, const char* url, int urlSz,
                         byte* ocspReqBuf, int ocspReqSz, byte** ocspRespBuf)
 {
-    char domainName[80], path[80];
-    int httpBufSz;
     SOCKET_T sfd = 0;
-    word16 port;
-    int ocspRespSz = 0;
-    byte* httpBuf = NULL;
+    word16   port;
+    int      ret = -1;
+#ifdef CYASSL_SMALL_STACK
+    char*    path;
+    char*    domainName;
+#else
+    char     path[80];
+    char     domainName[80];
+#endif
+
+#ifdef CYASSL_SMALL_STACK
+    path = (char*)XMALLOC(80, NULL, DYNAMIC_TYPE_TMP_BUFFER);
+    if (path == NULL)
+        return -1;
+    
+    domainName = (char*)XMALLOC(80, NULL, DYNAMIC_TYPE_TMP_BUFFER);
+    if (domainName == NULL) {
+        XFREE(path, NULL, DYNAMIC_TYPE_TMP_BUFFER);
+        return -1;
+    }
+#endif
 
     (void)ctx;
 
     if (ocspReqBuf == NULL || ocspReqSz == 0) {
         CYASSL_MSG("OCSP request is required for lookup");
-        return -1;
     }
-
-    if (ocspRespBuf == NULL) {
+    else if (ocspRespBuf == NULL) {
         CYASSL_MSG("Cannot save OCSP response");
-        return -1;
     }
-
-    if (decode_url(url, urlSz, domainName, path, &port) < 0) {
+    else if (decode_url(url, urlSz, domainName, path, &port) < 0) {
         CYASSL_MSG("Unable to decode OCSP URL");
-        return -1;
     }
-    
-    /* Note, the library uses the EmbedOcspRespFree() callback to
-     * free this buffer. */
-    httpBufSz = SCRATCH_BUFFER_SIZE;
-    httpBuf = (byte*)XMALLOC(httpBufSz, NULL, DYNAMIC_TYPE_IN_BUFFER);
+    else {
+        /* Note, the library uses the EmbedOcspRespFree() callback to
+         * free this buffer. */
+        int   httpBufSz = SCRATCH_BUFFER_SIZE;
+        byte* httpBuf   = (byte*)XMALLOC(httpBufSz, NULL, 
+                                                        DYNAMIC_TYPE_IN_BUFFER);
 
-    if (httpBuf == NULL) {
-        CYASSL_MSG("Unable to create OCSP response buffer");
-        return -1;
-    }
+        if (httpBuf == NULL) {
+            CYASSL_MSG("Unable to create OCSP response buffer");
+        }
+        else {
+            httpBufSz = build_http_request(domainName, path, ocspReqSz,
+                                                            httpBuf, httpBufSz);
 
-    httpBufSz = build_http_request(domainName, path, ocspReqSz,
-                                                        httpBuf, httpBufSz);
-
-    if ((tcp_connect(&sfd, domainName, port) == 0) && (sfd > 0)) {
-        int written;
-        written = (int)send(sfd, (char*)httpBuf, httpBufSz, 0);
-        if (written == httpBufSz) {
-            written = (int)send(sfd, (char*)ocspReqBuf, ocspReqSz, 0);
-            if (written == ocspReqSz) {
-                ocspRespSz = process_http_response(sfd, ocspRespBuf,
-                                                 httpBuf, SCRATCH_BUFFER_SIZE);
+            if ((tcp_connect(&sfd, domainName, port) != 0) || (sfd <= 0)) {
+                CYASSL_MSG("OCSP Responder connection failed");
             }
-        }
-        close(sfd);
-        if (ocspRespSz == 0) {
-            CYASSL_MSG("OCSP response was not OK, no OCSP response");
+            else if ((int)send(sfd, (char*)httpBuf, httpBufSz, 0) !=
+                                                                    httpBufSz) {
+                CYASSL_MSG("OCSP http request failed");
+            }
+            else if ((int)send(sfd, (char*)ocspReqBuf, ocspReqSz, 0) !=
+                                                                    ocspReqSz) {
+                CYASSL_MSG("OCSP ocsp request failed");
+            }
+            else {
+                ret = process_http_response(sfd, ocspRespBuf, httpBuf,
+                                                           SCRATCH_BUFFER_SIZE);
+            }
+
+            close(sfd);
             XFREE(httpBuf, NULL, DYNAMIC_TYPE_IN_BUFFER);
-            return -1;
         }
-    } else {
-        CYASSL_MSG("OCSP Responder connection failed");
-        close(sfd);
-        XFREE(httpBuf, NULL, DYNAMIC_TYPE_IN_BUFFER);
-        return -1;
     }
 
-    XFREE(httpBuf, NULL, DYNAMIC_TYPE_IN_BUFFER);
-    return ocspRespSz;
+#ifdef CYASSL_SMALL_STACK
+    XFREE(path,       NULL, DYNAMIC_TYPE_TMP_BUFFER);
+    XFREE(domainName, NULL, DYNAMIC_TYPE_TMP_BUFFER);
+#endif
+
+    return ret;
 }
 
 

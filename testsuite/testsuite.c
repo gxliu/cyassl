@@ -1,6 +1,6 @@
 /* testsuite.c
  *
- * Copyright (C) 2006-2013 wolfSSL Inc.
+ * Copyright (C) 2006-2014 wolfSSL Inc.
  *
  * This file is part of CyaSSL.
  *
@@ -16,7 +16,7 @@
  *
  * You should have received a copy of the GNU General Public License
  * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA
  */
 
 #ifdef HAVE_CONFIG_H
@@ -48,16 +48,29 @@ enum {
 };
 
 #ifndef USE_WINDOWS_API
-    const char outputName[] = "/tmp/output";
+    static const char outputName[] = "/tmp/output";
 #else
-    const char outputName[] = "output";
+    static const char outputName[] = "output";
 #endif
 
 
 int myoptind = 0;
 char* myoptarg = NULL;
 
-int main(int argc, char** argv)
+
+#ifndef NO_TESTSUITE_MAIN_DRIVER
+
+    static int testsuite_test(int argc, char** argv);
+
+    int main(int argc, char** argv)
+    {
+        return testsuite_test(argc, argv);
+    }
+
+#endif /* NO_TESTSUITE_MAIN_DRIVER */
+
+
+int testsuite_test(int argc, char** argv)
 {
     func_args server_args;
 
@@ -80,6 +93,7 @@ int main(int argc, char** argv)
     CyaSSL_Debugging_ON();
 #endif
 
+#if !defined(CYASSL_TIRTOS)
     if (CurrentDir("testsuite") || CurrentDir("_build"))
         ChangeDirBack(1);
     else if (CurrentDir("Debug") || CurrentDir("Release"))
@@ -87,6 +101,12 @@ int main(int argc, char** argv)
                                    /* Derived Data Advanced -> Custom  */
                                    /* Relative to Workspace, Build/Products */
                                    /* Debug or Release */
+#endif
+
+#ifdef CYASSL_TIRTOS
+    fdOpenSession(Task_self());
+#endif
+
     server_args.signal = &ready;
     InitTcpReady(&ready);
 
@@ -141,6 +161,14 @@ int main(int argc, char** argv)
         if (server_args.return_code != 0) return server_args.return_code;
     }
 
+    /* show ciphers */
+    {
+        char ciphers[1024];
+        XMEMSET(ciphers, 0, sizeof(ciphers));
+        CyaSSL_get_ciphers(ciphers, sizeof(ciphers)-1);
+        printf("ciphers = %s\n", ciphers);
+    }
+
     /* validate output equals input */
     {
         byte input[SHA256_DIGEST_SIZE];
@@ -154,6 +182,10 @@ int main(int argc, char** argv)
 
     CyaSSL_Cleanup();
     FreeTcpReady(&ready);
+
+#ifdef CYASSL_TIRTOS
+    fdCloseSession(Task_self());
+#endif
 
 #ifdef HAVE_CAVIUM
         CspShutdown(CAVIUM_DEV_ID);
@@ -205,7 +237,8 @@ void simple_test(func_args* args)
     cliArgs.return_code = 0;
    
     strcpy(svrArgs.argv[0], "SimpleServer");
-    #if !defined(USE_WINDOWS_API) && !defined(CYASSL_SNIFFER)
+    #if !defined(USE_WINDOWS_API) && !defined(CYASSL_SNIFFER)  && \
+                                     !defined(CYASSL_TIRTOS)
         strcpy(svrArgs.argv[svrArgs.argc++], "-p");
         strcpy(svrArgs.argv[svrArgs.argc++], "0");
     #endif
@@ -263,6 +296,17 @@ void start_thread(THREAD_FUNC fun, func_args* args, THREAD_TYPE* thread)
 #if defined(_POSIX_THREADS) && !defined(__MINGW32__)
     pthread_create(thread, 0, fun, args);
     return;
+#elif defined(CYASSL_TIRTOS)
+    /* Initialize the defaults and set the parameters. */
+    Task_Params taskParams;
+    Task_Params_init(&taskParams);
+    taskParams.arg0 = (UArg)args;
+    taskParams.stackSize = 65535;
+    *thread = Task_create((Task_FuncPtr)fun, &taskParams, NULL);
+    if (*thread == NULL) {
+        printf("Failed to create new Task\n");
+    }
+    Task_yield();
 #else
     *thread = (THREAD_TYPE)_beginthreadex(0, 0, fun, args, 0, 0);
 #endif
@@ -273,6 +317,14 @@ void join_thread(THREAD_TYPE thread)
 {
 #if defined(_POSIX_THREADS) && !defined(__MINGW32__)
     pthread_join(thread, 0);
+#elif defined(CYASSL_TIRTOS)
+    while(1) {
+        if (Task_getMode(thread) == Task_Mode_TERMINATED) {
+		    Task_sleep(5);
+            break;
+        }
+        Task_yield();
+    }
 #else
     int res = WaitForSingleObject((HANDLE)thread, INFINITE);
     assert(res == WAIT_OBJECT_0);
@@ -307,20 +359,34 @@ void FreeTcpReady(tcp_ready* ready)
 void file_test(const char* file, byte* check)
 {
     FILE* f;
-    int   i = 0, j;
+    int   i = 0, j, ret;
     Sha256   sha256;
     byte  buf[1024];
     byte  shasum[SHA256_DIGEST_SIZE];
    
-    InitSha256(&sha256); 
+    ret = InitSha256(&sha256);
+    if (ret != 0) {
+        printf("Can't InitSha256 %d\n", ret);
+        return;
+    }
     if( !( f = fopen( file, "rb" ) )) {
         printf("Can't open %s\n", file);
         return;
     }
-    while( ( i = (int)fread(buf, 1, sizeof(buf), f )) > 0 )
-        Sha256Update(&sha256, buf, i);
+    while( ( i = (int)fread(buf, 1, sizeof(buf), f )) > 0 ) {
+        ret = Sha256Update(&sha256, buf, i);
+        if (ret != 0) {
+            printf("Can't Sha256Update %d\n", ret);
+            return;
+        }
+    }
     
-    Sha256Final(&sha256, shasum);
+    ret = Sha256Final(&sha256, shasum);
+    if (ret != 0) {
+        printf("Can't Sha256Final %d\n", ret);
+        return;
+    }
+
     memcpy(check, shasum, sizeof(shasum));
 
     for(j = 0; j < SHA256_DIGEST_SIZE; ++j ) 

@@ -60,11 +60,11 @@
 # AX_APPEND_COMPILE_FLAGS([-Wlogical-op],,[$ax_append_compile_cflags_extra])
 # AX_APPEND_COMPILE_FLAGS([-fstack-check],,[$ax_append_compile_cflags_extra]) -- problems with fastmath stack size checks
 # AX_APPEND_COMPILE_FLAGS([-floop-parallelize-all],,[$ax_append_compile_cflags_extra]) -- causes RSA verify problem on x64
+# AX_APPEND_COMPILE_FLAGS([-Wunreachable-code],,[$ax_append_compile_cflags_extra])  -- older clang and when gcc had it are buggy
 
-#serial 4
+#serial 4.1
 
   AC_DEFUN([AX_HARDEN_LINKER_FLAGS], [
-      AC_REQUIRE([AX_CHECK_LINK_FLAG])
       AC_REQUIRE([AX_VCS_CHECKOUT])
       AC_REQUIRE([AX_DEBUG])
 
@@ -93,7 +93,6 @@
       ])
 
   AC_DEFUN([AX_HARDEN_CC_COMPILER_FLAGS], [
-      AC_REQUIRE([AX_APPEND_COMPILE_FLAGS])
       AC_REQUIRE([AX_HARDEN_LINKER_FLAGS])
 
       AC_LANG_PUSH([C])
@@ -228,7 +227,6 @@
       ])
 
   AC_DEFUN([AX_CC_OTHER_FLAGS], [
-      AC_REQUIRE([AX_APPEND_COMPILE_FLAGS])
       AC_REQUIRE([AX_HARDEN_CC_COMPILER_FLAGS])
 
       AC_LANG_PUSH([C])

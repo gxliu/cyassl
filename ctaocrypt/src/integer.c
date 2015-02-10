@@ -1,6 +1,6 @@
 /* integer.c
  *
- * Copyright (C) 2006-2013 wolfSSL Inc.
+ * Copyright (C) 2006-2014 wolfSSL Inc.
  *
  * This file is part of CyaSSL.
  *
@@ -16,7 +16,7 @@
  *
  * You should have received a copy of the GNU General Public License
  * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA
  */
 
 
@@ -1854,15 +1854,15 @@ int mp_exptmod_fast (mp_int * G, mp_int * X, mp_int * P, mp_int * Y,
   }
 
   /* compute the value at M[1<<(winsize-1)] by squaring M[1] (winsize-1) times*/
-  if ((err = mp_copy (&M[1], &M[1 << (winsize - 1)])) != MP_OKAY) {
+  if ((err = mp_copy (&M[1], &M[(mp_digit)(1 << (winsize - 1))])) != MP_OKAY) {
     goto LBL_RES;
   }
 
   for (x = 0; x < (winsize - 1); x++) {
-    if ((err = mp_sqr (&M[1 << (winsize - 1)], &M[1 << (winsize - 1)])) != MP_OKAY) {
+    if ((err = mp_sqr (&M[(mp_digit)(1 << (winsize - 1))], &M[(mp_digit)(1 << (winsize - 1))])) != MP_OKAY) {
       goto LBL_RES;
     }
-    if ((err = redux (&M[1 << (winsize - 1)], P, mp)) != MP_OKAY) {
+    if ((err = redux (&M[(mp_digit)(1 << (winsize - 1))], P, mp)) != MP_OKAY) {
       goto LBL_RES;
     }
   }
@@ -3250,19 +3250,19 @@ int s_mp_exptmod (mp_int * G, mp_int * X, mp_int * P, mp_int * Y, int redmode)
   /* compute the value at M[1<<(winsize-1)] by squaring 
    * M[1] (winsize-1) times 
    */
-  if ((err = mp_copy (&M[1], &M[1 << (winsize - 1)])) != MP_OKAY) {
+  if ((err = mp_copy (&M[1], &M[(mp_digit)(1 << (winsize - 1))])) != MP_OKAY) {
     goto LBL_MU;
   }
 
   for (x = 0; x < (winsize - 1); x++) {
     /* square it */
-    if ((err = mp_sqr (&M[1 << (winsize - 1)], 
-                       &M[1 << (winsize - 1)])) != MP_OKAY) {
+    if ((err = mp_sqr (&M[(mp_digit)(1 << (winsize - 1))], 
+                       &M[(mp_digit)(1 << (winsize - 1))])) != MP_OKAY) {
       goto LBL_MU;
     }
 
     /* reduce modulo P */
-    if ((err = redux (&M[1 << (winsize - 1)], P, &mu)) != MP_OKAY) {
+    if ((err = redux (&M[(mp_digit)(1 << (winsize - 1))], P, &mu)) != MP_OKAY) {
       goto LBL_MU;
     }
   }
@@ -3765,7 +3765,7 @@ int mp_sqrmod (mp_int * a, mp_int * b, mp_int * c)
 #endif
 
 
-#if defined(HAVE_ECC) || !defined(NO_PWDBASED) || defined(CYASSL_SNIFFER) || defined(CYASSL_HAVE_WOLFSCEP)
+#if defined(HAVE_ECC) || !defined(NO_PWDBASED) || defined(CYASSL_SNIFFER) || defined(CYASSL_HAVE_WOLFSCEP) || defined(CYASSL_KEY_GEN)
 
 /* single digit addition */
 int mp_add_d (mp_int* a, mp_digit b, mp_int* c)
@@ -3932,9 +3932,41 @@ int mp_sub_d (mp_int * a, mp_digit b, mp_int * c)
 #endif /* defined(HAVE_ECC) || !defined(NO_PWDBASED) */
 
 
-#ifdef CYASSL_KEY_GEN
+#if defined(CYASSL_KEY_GEN) || defined(HAVE_COMP_KEY)
 
-int mp_cnt_lsb(mp_int *a);
+static const int lnz[16] = {
+   4, 0, 1, 0, 2, 0, 1, 0, 3, 0, 1, 0, 2, 0, 1, 0
+};
+
+/* Counts the number of lsbs which are zero before the first zero bit */
+int mp_cnt_lsb(mp_int *a)
+{
+    int x;
+    mp_digit q, qq;
+
+    /* easy out */
+    if (mp_iszero(a) == 1) {
+        return 0;
+    }
+
+    /* scan lower digits until non-zero */
+    for (x = 0; x < a->used && a->dp[x] == 0; x++);
+    q = a->dp[x];
+    x *= DIGIT_BIT;
+
+    /* now scan this digit until a 1 is found */
+    if ((q & 1) == 0) {
+        do {
+            qq  = q & 15;
+            x  += lnz[qq];
+            q >>= 4;
+        } while (qq == 0);
+    }
+    return x;
+}
+
+
+
 
 static int s_is_power_of_two(mp_digit b, int *p)
 {
@@ -4030,11 +4062,14 @@ static int mp_div_d (mp_int * a, mp_digit b, mp_int * c, mp_digit * d)
 }
 
 
-static int mp_mod_d (mp_int * a, mp_digit b, mp_digit * c)
+int mp_mod_d (mp_int * a, mp_digit b, mp_digit * c)
 {
   return mp_div_d(a, b, NULL, c);
 }
 
+#endif /* defined(CYASSL_KEY_GEN) || defined(HAVE_COMP_KEY) */
+
+#ifdef CYASSL_KEY_GEN
 
 const mp_digit ltm_prime_tab[] = {
   0x0002, 0x0003, 0x0005, 0x0007, 0x000B, 0x000D, 0x0011, 0x0013,
@@ -4290,37 +4325,6 @@ LBL_T:
   return res;
 }
 
-
-static const int lnz[16] = { 
-   4, 0, 1, 0, 2, 0, 1, 0, 3, 0, 1, 0, 2, 0, 1, 0
-};
-
-/* Counts the number of lsbs which are zero before the first zero bit */
-int mp_cnt_lsb(mp_int *a)
-{
-    int x;
-    mp_digit q, qq;
-
-    /* easy out */
-    if (mp_iszero(a) == 1) {
-        return 0;
-    }
-
-    /* scan lower digits until non-zero */
-    for (x = 0; x < a->used && a->dp[x] == 0; x++);
-    q = a->dp[x];
-    x *= DIGIT_BIT;
-
-    /* now scan this digit until a 1 is found */
-    if ((q & 1) == 0) {
-        do {
-            qq  = q & 15;
-            x  += lnz[qq];
-            q >>= 4;
-        } while (qq == 0);
-    }
-    return x;
-}
 
 
 /* Greatest Common Divisor using the binary method */
